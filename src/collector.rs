@@ -29,7 +29,7 @@ pub struct CollectorState {
     /// Shares collected so far (deduplicated by x).
     pub shares: Vec<Share>,
     /// x values already seen (for dedup).
-    pub seen_x: HashSet<u8>,
+    pub seen_x: HashSet<u32>,
     /// Threshold K (if known from first share).
     pub threshold: Option<u8>,
     /// Public key (if known from first share).
@@ -156,17 +156,17 @@ impl CollectorState {
 /// Result of trying to add a share.
 #[derive(Debug)]
 pub enum AddResult {
-    Accepted(u8),
-    Duplicate(u8),
-    InvalidSignature(u8, String),
-    PubkeyMismatch(u8),
-    PubkeyPrefixMismatch(u8),
-    ThresholdMismatch(u8, u8, u8),
+    Accepted(u32),
+    Duplicate(u32),
+    InvalidSignature(u32, String),
+    PubkeyMismatch(u32),
+    PubkeyPrefixMismatch(u32),
+    ThresholdMismatch(u32, u8, u8),
     /// Mnemonic share accepted but without signature verification —
     /// the 4-byte pubkey prefix matched.
-    AcceptedMnemonic(u8),
+    AcceptedMnemonic(u32),
     /// Mnemonic share accepted without prefix verification (no context yet).
-    AcceptedMnemonicUnverified(u8),
+    AcceptedMnemonicUnverified(u32),
 }
 
 impl std::fmt::Display for AddResult {
@@ -533,6 +533,12 @@ fn run_camera_window(
         viewport: egui::ViewportBuilder::default()
             .with_title("ssscrypt — QR Share Scanner")
             .with_inner_size([640.0, 520.0]),
+        // Allow the EventLoop to be created on a non-main thread.
+        // Without this, winit panics on Linux when spawned from std::thread::spawn.
+        event_loop_builder: Some(Box::new(|builder| {
+            use winit::platform::x11::EventLoopBuilderExtX11;
+            builder.with_any_thread(true);
+        })),
         ..Default::default()
     };
 

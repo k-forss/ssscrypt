@@ -38,15 +38,18 @@ pub struct DerivedKeys {
 
 impl Drop for DerivedKeys {
     fn drop(&mut self) {
+        // SigningKey implements ZeroizeOnDrop (ed25519-dalek `zeroize` feature),
+        // so it auto-zeroizes when dropped after this method returns.
         self.data_key.zeroize();
     }
 }
 
 /// Derive Ed25519 signing key and XChaCha20-Poly1305 data key from master secret.
 pub fn derive_keys(master: &[u8; SECRET_LEN]) -> DerivedKeys {
-    let sign_seed = blake3::derive_key(SIGNING_DOMAIN, master);
+    let mut sign_seed = blake3::derive_key(SIGNING_DOMAIN, master);
     let data_key = blake3::derive_key(DATA_DOMAIN, master);
     let signing = SigningKey::from_bytes(&sign_seed);
+    sign_seed.zeroize();
     DerivedKeys { signing, data_key }
 }
 
@@ -259,7 +262,7 @@ fn ingest_shares(
     };
 
     // Step 5: Deduplicate x values (keep first seen).
-    let mut seen_x = std::collections::HashSet::new();
+    let mut seen_x: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut deduped: Vec<Share> = Vec::new();
     for share in selected {
         if seen_x.insert(share.x) {

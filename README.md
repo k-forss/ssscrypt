@@ -31,11 +31,11 @@ Encrypt a file. Either generates a new random master key and creates shares, or 
 ```bash
 # New key — encrypt file, create 3-of-5 shares
 ssscrypt encrypt --in root.key --out root.key.enc \
-  --threshold 3 --shares 5 --new-shares-dir shares/
+  --threshold 3 -n 5 --new-shares-dir shares/
 
 # New key — pipe in, pipe out
 cat root.key | ssscrypt encrypt \
-  --threshold 3 --shares 5 --new-shares-dir shares/ > root.key.enc
+  --threshold 3 -n 5 --new-shares-dir shares/ > root.key.enc
 
 # Existing key — encrypt another file with the same master key (⚠ unanchored)
 ssscrypt encrypt --in backup.key --out backup.key.enc \
@@ -73,30 +73,36 @@ The header contains the pubkey and threshold hint. Each share is validated indiv
 Decrypt with old shares and re-encrypt with a new key + new shares. **Anchored** — old ciphertext header provides the anchor.
 
 ```bash
+# Threshold is inherited from old shares if omitted
 ssscrypt rotate --in old.enc --out new.enc \
   --shares-dir shares_old/ \
-  --threshold 3 --shares 5 --new-shares-dir shares_new/
+  -n 5 --new-shares-dir shares_new/
 
-# Pipe
-cat old.enc | ssscrypt rotate --shares-dir shares_old/ \
-  --threshold 3 --shares 5 --new-shares-dir shares_new/ > new.enc
+# Override threshold for the new share set
+ssscrypt rotate --in old.enc --out new.enc \
+  --shares-dir shares_old/ \
+  -k 3 -n 5 --new-shares-dir shares_new/
 ```
 
 ### gen-shares
 
 Reconstruct master key from existing shares and re-split into a new set. **Unanchored** — use `--pin-pubkey` or `--anchor-encrypted`.
 
+Threshold and group are inherited from the collected shares — `gen-shares` re-splits the *same* key, so these properties cannot be changed (use `rotate` to create a new key with different parameters).
+
+New shares are assigned **random x values** (from 1 to 2^32-1) to minimise accidental collision with outstanding shares whose x values are unknown.
+
 ```bash
-# Pin with full pubkey hex (printed during key creation)
+# Pin with pubkey hex
 ssscrypt gen-shares \
   --shares-dir shares_old/ \
-  --threshold 3 --shares 5 --new-shares-dir shares_new/ \
+  -n 5 --new-shares-dir shares_new/ \
   --pin-pubkey 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
 # Pin from an existing encrypted file's header
 ssscrypt gen-shares \
   --shares-dir shares_old/ \
-  --threshold 3 --shares 5 --new-shares-dir shares_new/ \
+  -n 5 --new-shares-dir shares_new/ \
   --anchor-encrypted root-key.enc
 ```
 
@@ -115,7 +121,7 @@ ssscrypt x509 create-root \
   --cn "Homelab Root CA" --org "Example Inc" \
   --days 3650 \
   --out-cert root-ca.pem --out-key-enc root-key.enc \
-  --threshold 3 --shares 5 --new-shares-dir shares/
+  --threshold 3 -n 5 --new-shares-dir shares/
 ```
 
 #### x509 sign-csr
@@ -182,57 +188,81 @@ This ensures deterministic behavior even if the shares directory accidentally co
 
 ## File formats
 
-### Encrypted file
+Both encrypted files and share files use a human-readable **text format** on disk — key-value lines with base64-encoded binary payloads. The binary (packed) format is used only inside QR codes.
 
-| Segment     | Size               | Description                               |
-|-------------|--------------------|-------------------------------------------|
-| header      | 67+ bytes          | see below (variable due to group field)   |
-| ciphertext  | plaintext_len + 16 | XChaCha20-Poly1305 output (includes tag)  |
-| signature   | 64 bytes           | Ed25519 over header‖ciphertext‖tag        |
+### Encrypted file (`.enc`)
 
-**Header layout (67+ bytes):**
+```
+# ssscrypt encrypted file — DO NOT EDIT
+# Decryption requires threshold secret sharing.
 
-| Field       | Offset | Size    | Description                                      |
-|-------------|--------|---------|--------------------------------------------------|
-| magic       | 0      | 8       | `SSSENC01`                                       |
-| version     | 8      | 1       | `1`                                              |
-| threshold   | 9      | 1       | UX hint — shares required (also in each share)   |
-| nonce       | 10     | 24      | random, used for XChaCha20-Poly1305              |
-| pubkey      | 34     | 32      | Ed25519 public key derived from master key       |
-| group_len   | 66     | 1       | length of UTF-8 group name (0–255)               |
-| group       | 67     | 0–255   | human-readable name (e.g. certificate CN)        |
+version: 1
+threshold: 3
+group: Homelab Root CA
+pubkey: 0123456789abcdef…  (64 hex chars, Ed25519 public key)
+data: <base64>             (nonce ‖ ciphertext ‖ AEAD tag)
+signature: <base64>        (Ed25519 over the signed message)
+```
 
-The group is included in the signed region — it cannot be modified without invalidating the signature.
+| Field       | Format    | Description                                          |
+|-------------|-----------|------------------------------------------------------|
+| version     | decimal   | `1` (implies XChaCha20-Poly1305 + Ed25519)           |
+| threshold   | decimal   | UX hint — shares required (also embedded in shares)  |
+| group       | UTF-8     | human-readable name (e.g. certificate CN)            |
+| pubkey      | hex       | 32-byte Ed25519 public key derived from master key   |
+| data        | base64    | nonce (24 B) ‖ ciphertext ‖ AEAD tag (16 B)         |
+| signature   | base64    | Ed25519 over header ‖ ciphertext ‖ tag (64 B)       |
 
-The Ed25519 signature covers header‖ciphertext‖tag, providing integrity and authenticity for all fields including the pubkey. The AEAD tag authenticates the ciphertext; the Ed25519 signature additionally authenticates the header and provides a stable key identifier for full-file integrity.
-
-Version 1 implies XChaCha20-Poly1305 + Ed25519 — no separate algorithm ID needed. XChaCha20 uses a 24-byte nonce, eliminating nonce collision risk with random generation.
+The group is included in the signed region — it cannot be modified without invalidating the signature. The AEAD tag authenticates the ciphertext; the Ed25519 signature additionally authenticates the header fields and provides a stable key identifier for full-file integrity.
 
 ### Share file (`.share.txt`)
 
-Base64-encoded binary payload. Shares are **file-independent** — the same shares can decrypt any file encrypted with that master key.
+```
+# ssscrypt share — DO NOT EDIT
+# Modifying this file will invalidate the cryptographic signature.
+
+version: 1
+threshold: 3
+group: Homelab Root CA
+pubkey: 0123456789abcdef…  (64 hex chars)
+data: <base64>             (x ‖ y — share index + GF(2^32) evaluation)
+signature: <base64>        (Ed25519 over the signed payload)
+```
+
+| Field       | Format    | Description                                     |
+|-------------|-----------|------------------------------------------------ |
+| version     | decimal   | share format version (`1`)                      |
+| threshold   | decimal   | shares required to reconstruct                  |
+| group       | UTF-8     | human-readable name (e.g. certificate CN)       |
+| pubkey      | hex       | 32-byte Ed25519 pubkey (grouping / matching)    |
+| data        | base64    | x (4 B, big-endian u32) ‖ y (32 B, GF(2^32) value) |
+| signature   | base64    | Ed25519 over all preceding fields (64 B)        |
+
+Shares are **file-independent** — the same shares can decrypt any file encrypted with that master key. `share_count` is intentionally omitted — it becomes stale when shares are re-split with `gen-shares`. The threshold and pubkey are sufficient for grouping and reconstruction.
+
+### QR payload (binary format)
+
+Inside QR codes, shares are packed into a compact binary format:
 
 | Field        | Offset | Size    | Description                                     |
 |--------------|--------|---------|-------------------------------------------------|
 | magic        | 0      | 2       | `SS`                                            |
 | version      | 2      | 1       | share format version (1)                        |
 | threshold k  | 3      | 1       | shares required to reconstruct                  |
-| x            | 4      | 1       | share index (1-based)                           |
-| y            | 5      | 32      | share data (GF(256) evaluation)                 |
-| pubkey       | 37     | 32      | Ed25519 pubkey (standalone grouping / matching) |
-| group_len    | 69     | 1       | length of UTF-8 group name (0–255)              |
-| group        | 70     | 0–255   | human-readable name (e.g. certificate CN)       |
-| signature    | 70+N   | 64      | Ed25519 over bytes 0..70+N                      |
+| x            | 4      | 4       | share index (big-endian u32)                    |
+| y            | 8      | 32      | share data (GF(2^32) evaluation)                |
+| pubkey       | 40     | 32      | Ed25519 pubkey (standalone grouping / matching) |
+| group_len    | 72     | 1       | length of UTF-8 group name (0–255)              |
+| group        | 73     | 0–255   | human-readable name (e.g. certificate CN)       |
+| signature    | 73+N   | 64      | Ed25519 over bytes 0..73+N                      |
 
-Minimum: 134 bytes (group empty). The group is included in the signed region.
-
-`share_count` is intentionally omitted — it becomes stale when shares are re-split with `gen-shares`. The threshold and pubkey are sufficient for grouping and reconstruction.
+Minimum: 137 bytes (group empty).
 
 ### Share QR card (`.share.jpg`)
 
 A JPEG card generated alongside every `.share.txt` file. Contains:
 - A QR code encoding the share's binary payload
-- 28 mnemonic backup words (1024-word list, 10-bit word + 1-bit case encoding, 12-bit checksum)
+- 30 mnemonic backup words (1024-word list, 10-bit word + 1-bit case encoding, 10-bit checksum)
 - Metadata label (group, threshold, share index)
 
 Shares can be recovered by scanning the QR code with a camera or by typing the mnemonic words into the interactive collector.

@@ -31,13 +31,14 @@ pub enum Command {
 /// Args for creating new shares (output).
 #[derive(Args, Debug)]
 pub struct SharesOutputArgs {
-    /// Threshold K — minimum shares required to reconstruct the key
-    #[arg(long)]
-    pub threshold: u8,
+    /// Threshold K — minimum shares required to reconstruct the key.
+    /// If omitted, inherited from the existing shares being collected.
+    #[arg(short = 'k', long)]
+    pub threshold: Option<u8>,
 
     /// Total number of shares N to create
-    #[arg(long)]
-    pub shares: u8,
+    #[arg(short = 'n', long)]
+    pub num_shares: u8,
 
     /// Directory to write new share files into
     #[arg(long)]
@@ -70,12 +71,12 @@ pub struct EncryptArgs {
     pub shares_dir: Option<PathBuf>,
 
     /// Threshold K — minimum shares required to reconstruct the key
-    #[arg(long)]
+    #[arg(short = 'k', long)]
     pub threshold: Option<u8>,
 
     /// Total number of shares N to create
-    #[arg(long)]
-    pub shares: Option<u8>,
+    #[arg(short = 'n', long)]
+    pub num_shares: Option<u8>,
 
     /// Directory to write new share files into
     #[arg(long)]
@@ -135,13 +136,13 @@ pub struct GenSharesArgs {
     #[arg(long)]
     pub shares_dir: Option<PathBuf>,
 
-    /// New shares to create
-    #[command(flatten)]
-    pub new_shares: SharesOutputArgs,
+    /// Total number of new shares N to create
+    #[arg(short = 'n', long)]
+    pub num_shares: u8,
 
-    /// Human-readable group name for new shares (e.g. certificate name)
-    #[arg(long, default_value = "")]
-    pub group: String,
+    /// Directory to write new share files into
+    #[arg(long)]
+    pub new_shares_dir: PathBuf,
 
     #[command(flatten)]
     pub pin: PinArgs,
@@ -182,12 +183,12 @@ pub struct CreateRootArgs {
     pub out_key_enc: Option<PathBuf>,
 
     /// Threshold K — minimum shares required to decrypt the key
-    #[arg(long)]
+    #[arg(short = 'k', long)]
     pub threshold: Option<u8>,
 
     /// Total number of shares N to create
-    #[arg(long)]
-    pub shares: Option<u8>,
+    #[arg(short = 'n', long)]
+    pub num_shares: Option<u8>,
 
     /// Directory to write share files into
     #[arg(long)]
@@ -252,22 +253,22 @@ pub fn run(command: Command) -> Result<()> {
 
 fn encrypt(args: EncryptArgs) -> Result<()> {
     let has_existing = args.shares_dir.is_some() || args.pin.pin_pubkey.is_some() || args.pin.anchor_encrypted.is_some();
-    let has_new = args.threshold.is_some() || args.shares.is_some() || args.new_shares_dir.is_some();
+    let has_new = args.threshold.is_some() || args.num_shares.is_some() || args.new_shares_dir.is_some();
 
     if !has_existing && !has_new {
         bail!(
             "Provide either --shares-dir (encrypt with existing key) \
-             or --threshold/--shares/--new-shares-dir (generate new key)"
+             or --threshold/--num-shares/--new-shares-dir (generate new key)"
         );
     }
 
     // If creating new shares, all three are required.
     let new_share_params = if has_new {
         let threshold = args.threshold.ok_or_else(|| anyhow::anyhow!("--threshold required when creating new shares"))?;
-        let shares = args.shares.ok_or_else(|| anyhow::anyhow!("--shares required when creating new shares"))?;
+        let num_shares = args.num_shares.ok_or_else(|| anyhow::anyhow!("--num-shares required when creating new shares"))?;
         let dir = args.new_shares_dir.as_ref().ok_or_else(|| anyhow::anyhow!("--new-shares-dir required when creating new shares"))?.clone();
-        validate_threshold(threshold, shares)?;
-        Some((threshold, shares, dir))
+        validate_threshold(threshold, num_shares)?;
+        Some((threshold, num_shares, dir))
     } else {
         None
     };
@@ -375,8 +376,6 @@ fn decrypt(args: DecryptArgs) -> Result<()> {
 }
 
 fn rotate(args: RotateArgs) -> Result<()> {
-    validate_threshold(args.new_shares.threshold, args.new_shares.shares)?;
-
     // Read encrypted file.
     let data = io::read_input(&args.io)?;
     eprintln!("rotate: read {} bytes", data.len());
@@ -403,10 +402,14 @@ fn rotate(args: RotateArgs) -> Result<()> {
     drop(old_master);
     drop(old_keys);
 
+    // Resolve new threshold: explicit flag > inherited from old shares.
+    let new_threshold = args.new_shares.threshold.unwrap_or(collected.threshold);
+    validate_threshold(new_threshold, args.new_shares.num_shares)?;
+
     // Generate new key, encrypt, split.
     let new_master = Zeroizing::new(crypto::generate_master_key());
     let new_keys = crypto::derive_keys(&new_master);
-    let new_encrypted = crypto::encrypt(&plaintext, &new_keys, args.new_shares.threshold, &args.group)?;
+    let new_encrypted = crypto::encrypt(&plaintext, &new_keys, new_threshold, &args.group)?;
 
     // plaintext is no longer needed once encrypted; drop it eagerly.
     drop(plaintext);
@@ -416,16 +419,16 @@ fn rotate(args: RotateArgs) -> Result<()> {
     eprintln!("rotate: wrote re-encrypted output");
 
     // Write new shares.
-    let new_raw = sss::split(&new_master, args.new_shares.threshold, args.new_shares.shares)?;
+    let new_raw = sss::split(&new_master, new_threshold, args.new_shares.num_shares)?;
     let new_signed: Result<Vec<Share>> = new_raw
         .iter()
-        .map(|r| crypto::sign_share(r, &new_keys, args.new_shares.threshold, &args.group))
+        .map(|r| crypto::sign_share(r, &new_keys, new_threshold, &args.group))
         .collect();
     io::write_shares(&args.new_shares.new_shares_dir, &new_signed?)?;
     eprintln!(
         "rotate: wrote {}-of-{} new shares to {:?}",
-        args.new_shares.threshold,
-        args.new_shares.shares,
+        new_threshold,
+        args.new_shares.num_shares,
         args.new_shares.new_shares_dir
     );
 
@@ -434,8 +437,6 @@ fn rotate(args: RotateArgs) -> Result<()> {
 }
 
 fn gen_shares(args: GenSharesArgs) -> Result<()> {
-    validate_threshold(args.new_shares.threshold, args.new_shares.shares)?;
-
     // Resolve anchor for unanchored operation.
     let anchor = resolve_anchor(&args.pin)?;
 
@@ -446,9 +447,17 @@ fn gen_shares(args: GenSharesArgs) -> Result<()> {
         None,
     )?;
 
+    // Threshold and group are inherited from the collected shares — gen-shares
+    // re-splits the same key, so these properties must not change.
+    let threshold = collected.threshold;
+    let group = collected.shares.first()
+        .map(|s| s.group.clone())
+        .unwrap_or_default();
+    validate_threshold(threshold, args.num_shares)?;
+
     // Reconstruct master key.
     let raw = crypto::shares_to_raw(&collected.shares);
-    let mut master = sss::combine(&raw, collected.threshold)?;
+    let master = Zeroizing::new(sss::combine(&raw, collected.threshold)?);
     let keys = crypto::derive_keys(&master);
 
     // Verify derived pubkey matches.
@@ -457,23 +466,23 @@ fn gen_shares(args: GenSharesArgs) -> Result<()> {
         bail!("derived pubkey does not match share pubkey — reconstruction error?");
     }
 
-    // Split into new shares.
-    let new_raw = sss::split(&master, args.new_shares.threshold, args.new_shares.shares)?;
+    // Split into new shares with random x values to minimize collision
+    // with any outstanding shares we don't know about.
+    let exclude_xs: Vec<u32> = collected.shares.iter().map(|s| s.x).collect();
+    let new_raw = sss::split_random_x(&master, threshold, args.num_shares, &exclude_xs)?;
     let new_signed: Result<Vec<Share>> = new_raw
         .iter()
-        .map(|r| crypto::sign_share(r, &keys, args.new_shares.threshold, &args.group))
+        .map(|r| crypto::sign_share(r, &keys, threshold, &group))
         .collect();
-    io::write_shares(&args.new_shares.new_shares_dir, &new_signed?)?;
+    io::write_shares(&args.new_shares_dir, &new_signed?)?;
     eprintln!(
-        "gen-shares: wrote {}-of-{} new shares to {:?}",
-        args.new_shares.threshold,
-        args.new_shares.shares,
-        args.new_shares.new_shares_dir
+        "gen-shares: wrote {}-of-{} new shares to {:?} (random x values)",
+        threshold,
+        args.num_shares,
+        args.new_shares_dir
     );
 
-    // Zeroize.
-    master.zeroize();
-    drop(keys);
+    // master and keys are zeroized on drop.
     Ok(())
 }
 
@@ -516,7 +525,7 @@ fn x509_create_root(args: CreateRootArgs) -> Result<()> {
             .parse()
             .context("invalid number for threshold")?,
     };
-    let shares: u8 = match args.shares {
+    let shares: u8 = match args.num_shares {
         Some(s) => s,
         None => prompt("Total shares (N)", None)?
             .parse()
@@ -542,9 +551,13 @@ fn x509_create_root(args: CreateRootArgs) -> Result<()> {
 
     // Encrypt the private key using ssscrypt.
     let group = cn.clone();
-    let mut master = crypto::generate_master_key();
+    let master = Zeroizing::new(crypto::generate_master_key());
     let keys = crypto::derive_keys(&master);
     let encrypted = crypto::encrypt(key_pem.as_bytes(), &keys, threshold, &group)?;
+
+    // Zeroize the plaintext CA private key now that it's encrypted.
+    let mut key_pem = key_pem;
+    key_pem.zeroize();
 
     // Write encrypted key file (text format).
     std::fs::write(&out_key_enc, encrypted.to_text().as_bytes())
@@ -563,9 +576,7 @@ fn x509_create_root(args: CreateRootArgs) -> Result<()> {
         threshold, shares, new_shares_dir
     );
 
-    // Zeroize.
-    master.zeroize();
-    drop(keys);
+    // master and keys are zeroized on drop.
     Ok(())
 }
 
@@ -649,15 +660,15 @@ fn x509_sign_csr(args: SignCsrArgs) -> Result<()> {
 
     // Reconstruct master key and decrypt the CA private key.
     let raw = crypto::shares_to_raw(&collected.shares);
-    let mut master = sss::combine(&raw, collected.threshold)?;
+    let master = Zeroizing::new(sss::combine(&raw, collected.threshold)?);
     let keys = crypto::derive_keys(&master);
     let key_pem_bytes = crypto::decrypt(&encrypted, &keys)?;
-    let key_pem =
+    let mut key_pem =
         String::from_utf8(key_pem_bytes).context("decrypted key is not valid UTF-8")?;
     eprintln!("x509: decrypted CA private key");
 
-    // Zeroize key material.
-    master.zeroize();
+    // Zeroize key material eagerly before signing.
+    drop(master);
     drop(keys);
 
     // Sign the CSR.
@@ -670,6 +681,9 @@ fn x509_sign_csr(args: SignCsrArgs) -> Result<()> {
         pathlen,
     )?;
     eprintln!("x509: signed certificate");
+
+    // Zeroize the decrypted private key.
+    key_pem.zeroize();
 
     // Write signed certificate.
     std::fs::write(&out_cert, &signed_pem)

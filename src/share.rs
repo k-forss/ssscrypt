@@ -1,6 +1,6 @@
 //! Share file format: serialization, deserialization, and display.
 //!
-//! ## Binary layout (variable, 134+ bytes)
+//! ## Binary layout (variable, 137+ bytes)
 //!
 //! Used for QR encoding and constructing signed messages:
 //!
@@ -9,12 +9,12 @@
 //! | magic        | 0         | 2        | `SS`                                 |
 //! | version      | 2         | 1        | share format version (1)             |
 //! | threshold    | 3         | 1        | K — shares required to reconstruct   |
-//! | x            | 4         | 1        | share index (1-based)                |
-//! | y            | 5         | 32       | share data (GF(256) evaluation)      |
-//! | pubkey       | 37        | 32       | Ed25519 public key                   |
-//! | group_len    | 69        | 1        | length of UTF-8 group name (0–255)   |
-//! | group        | 70        | 0–255    | human-readable name (e.g. cert name) |
-//! | signature    | 70+N      | 64       | Ed25519 over bytes 0..70+N           |
+//! | x            | 4         | 4        | share evaluation point (big-endian)  |
+//! | y            | 8         | 32       | share data (GF(2^32) evaluation)     |
+//! | pubkey       | 40        | 32       | Ed25519 public key                   |
+//! | group_len    | 72        | 1        | length of UTF-8 group name (0–255)   |
+//! | group        | 73        | 0–255    | human-readable name (e.g. cert name) |
+//! | signature    | 73+N      | 64       | Ed25519 over bytes 0..73+N           |
 //!
 //! The group is included in the signed region — it cannot be modified
 //! without invalidating the signature.
@@ -39,31 +39,33 @@ use base64::Engine;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
+use zeroize::Zeroize;
 
 const SHARE_MAGIC: &[u8; 2] = b"SS";
 pub const SHARE_VERSION: u8 = 1;
 
-/// Minimum binary share size: pre_group(70) + group_len=0 + signature(64).
-const SHARE_MIN_SIZE: usize = 134;
+/// Minimum binary share size: pre_group(73) + group_len=0 + signature(64).
+const SHARE_MIN_SIZE: usize = 137;
 
 /// Maximum group name length in bytes.
 const MAX_GROUP_LEN: usize = 255;
 
-/// Fixed fields before the group: magic(2)+ver(1)+threshold(1)+x(1)+y(32)+pubkey(32)+group_len(1).
-const PRE_GROUP_LEN: usize = 70;
+/// Fixed fields before the group: magic(2)+ver(1)+threshold(1)+x(4)+y(32)+pubkey(32)+group_len(1).
+const PRE_GROUP_LEN: usize = 73;
 
 /// Ed25519 signature size.
 const SIG_LEN: usize = 64;
 
-/// Share data size in bytes: x(1) + y(32).
-const DATA_LEN: usize = 33;
+/// Share data size in bytes: x(4) + y(32).
+const DATA_LEN: usize = 36;
 
 /// On-disk / in-memory representation of a single share.
-#[derive(Clone)]
+#[derive(Clone, Zeroize)]
+#[zeroize(drop)]
 pub struct Share {
     pub version: u8,
     pub threshold: u8,
-    pub x: u8,
+    pub x: u32,
     pub y: [u8; 32],
     pub pubkey: [u8; 32],
     pub group: String,
@@ -93,7 +95,7 @@ impl Share {
         buf.extend_from_slice(SHARE_MAGIC);
         buf.push(self.version);
         buf.push(self.threshold);
-        buf.push(self.x);
+        buf.extend_from_slice(&self.x.to_be_bytes());
         buf.extend_from_slice(&self.y);
         buf.extend_from_slice(&self.pubkey);
         buf.push(group_len as u8);
@@ -127,15 +129,15 @@ impl Share {
         }
 
         let threshold = bytes[3];
-        let x = bytes[4];
+        let x = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
 
         let mut y = [0u8; 32];
-        y.copy_from_slice(&bytes[5..37]);
+        y.copy_from_slice(&bytes[8..40]);
 
         let mut pubkey = [0u8; 32];
-        pubkey.copy_from_slice(&bytes[37..69]);
+        pubkey.copy_from_slice(&bytes[40..72]);
 
-        let group_len = bytes[69] as usize;
+        let group_len = bytes[72] as usize;
         let expected_size = PRE_GROUP_LEN + group_len + SIG_LEN;
         if bytes.len() < expected_size {
             bail!(
@@ -144,10 +146,10 @@ impl Share {
             );
         }
 
-        let group = String::from_utf8(bytes[70..70 + group_len].to_vec())
+        let group = String::from_utf8(bytes[73..73 + group_len].to_vec())
             .context("share: group is not valid UTF-8")?;
 
-        let sig_start = 70 + group_len;
+        let sig_start = 73 + group_len;
         let mut signature = [0u8; 64];
         signature.copy_from_slice(&bytes[sig_start..sig_start + SIG_LEN]);
 
@@ -184,7 +186,7 @@ impl Share {
         let pk_hex = hex_full(&self.pubkey);
 
         let mut data_bytes = Vec::with_capacity(DATA_LEN);
-        data_bytes.push(self.x);
+        data_bytes.extend_from_slice(&self.x.to_be_bytes());
         data_bytes.extend_from_slice(&self.y);
         let data_b64 = B64.encode(&data_bytes);
         let sig_b64 = B64.encode(self.signature);
@@ -251,9 +253,9 @@ impl Share {
                 data_bytes.len()
             );
         }
-        let x = data_bytes[0];
+        let x = u32::from_be_bytes(data_bytes[0..4].try_into().unwrap());
         let mut y = [0u8; 32];
-        y.copy_from_slice(&data_bytes[1..33]);
+        y.copy_from_slice(&data_bytes[4..36]);
 
         let sig_b64 = fields
             .get("signature")
