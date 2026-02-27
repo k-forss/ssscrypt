@@ -19,6 +19,7 @@
 //! tab-autocomplete needs very few keystrokes.
 
 use anyhow::{bail, Result};
+use std::sync::OnceLock;
 use zeroize::Zeroize;
 
 /// Culled 1024-word English wordlist (Levenshtein-optimised, compile-time).
@@ -49,9 +50,10 @@ const MAX_EDIT_DISTANCE: usize = 3;
 // Wordlist
 // ---------------------------------------------------------------------------
 
-/// Get the wordlist as a Vec of &str.
-fn wordlist() -> Vec<&'static str> {
-    WORDLIST_RAW.lines().collect()
+/// Get the wordlist as a &'static slice, initialised once.
+fn wordlist() -> &'static [&'static str] {
+    static WORDS: OnceLock<Vec<&'static str>> = OnceLock::new();
+    WORDS.get_or_init(|| WORDLIST_RAW.lines().collect())
 }
 
 /// Look up a word's index (case-insensitive) in the wordlist.
@@ -274,8 +276,9 @@ fn is_uppercase_token(s: &str) -> bool {
 pub fn tab_complete(prefix: &str) -> Vec<&'static str> {
     let lower = prefix.to_ascii_lowercase();
     wordlist()
-        .into_iter()
-        .filter(|w| w.starts_with(&lower))
+        .iter()
+        .copied()
+        .filter(|w| w.starts_with(lower.as_str()))
         .collect()
 }
 
@@ -301,11 +304,6 @@ impl Completion {
             Completion::Unique(w) => Some(w),
             _ => None,
         }
-    }
-
-    /// True when the prefix is detected as erroneous (`NoMatch` or `MixedCase`).
-    pub fn is_error(&self) -> bool {
-        matches!(self, Completion::NoMatch | Completion::MixedCase)
     }
 }
 

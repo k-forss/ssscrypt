@@ -565,13 +565,14 @@ fn render_prompt(
         Completion::NoMatch => {
             // Red typed text + warning glyph.
             write!(out, "\x1b[31m{}\x1b[0m \x1b[31m✗\x1b[0m", typed)?;
-            // Move cursor back before the indicator.
-            write!(out, "\x1b[3D")?;
+            // Move cursor back before the indicator (space + glyph = 2 columns).
+            write!(out, "\x1b[2D")?;
         }
         Completion::MixedCase => {
             // Yellow typed text + case warning.
             write!(out, "\x1b[33m{}\x1b[0m \x1b[33m⚠\x1b[0m", typed)?;
-            write!(out, "\x1b[3D")?;
+            // Move cursor back before the indicator (space + glyph = 2 columns).
+            write!(out, "\x1b[2D")?;
         }
         _ => {
             // Empty or Ambiguous — just show typed text, no decoration.
@@ -673,18 +674,20 @@ fn show_reject(
     out.flush()
 }
 
-/// Accept a typed word if it is valid and case-consistent.
+/// Accept a typed word if it can be resolved or passed through for decode-time correction.
 ///
 /// Prefers the shadow completion (unique prefix match).  Falls back to an
-/// exact wordlist lookup of the typed text.  Returns `None` when the input
-/// is erroneous or still ambiguous.
+/// exact wordlist lookup of the typed text, or allows near-miss words through
+/// so that `mnemonic::decode()` can attempt fuzzy correction across the full
+/// phrase.  Returns `None` only for hard errors (mixed case, ambiguous prefix,
+/// or empty input).
 fn try_accept(typed: &str, comp: &mnemonic::Completion) -> Option<String> {
     if typed.is_empty() {
         return None;
     }
 
-    // Error states → reject.
-    if comp.is_error() {
+    // Hard error states → reject.
+    if matches!(comp, mnemonic::Completion::MixedCase | mnemonic::Completion::Ambiguous) {
         return None;
     }
 
@@ -693,15 +696,9 @@ fn try_accept(typed: &str, comp: &mnemonic::Completion) -> Option<String> {
         return Some(w.to_string());
     }
 
-    // Full word typed — check wordlist (case-consistent since comp isn't MixedCase).
-    if matches!(
-        mnemonic::validate_word(typed),
-        mnemonic::WordValidation::Valid(_)
-    ) {
-        Some(typed.to_string())
-    } else {
-        None
-    }
+    // Full word typed — accept exact matches and near-miss words alike so that
+    // mnemonic::decode() can attempt fuzzy correction across the full phrase.
+    Some(typed.to_string())
 }
 
 // -- camera / status helpers ------------------------------------------------
@@ -720,10 +717,18 @@ fn drain_camera(
     }
     // Camera-scanned shares.
     while let Ok(share) = cam_rx.try_recv() {
-        let mut st = state.lock().unwrap();
-        let result = st.try_add(share);
+        // Keep the critical section small: mutate state, then drop the lock.
+        let result = {
+            let mut st = state.lock().unwrap();
+            st.try_add(share)
+        };
+        // Terminal output is done without holding the lock.
         write!(out, "\r\x1b[2K  camera: {result}\r\n")?;
-        write_status(&st, out)?;
+        // Re-acquire briefly only to read status for display.
+        {
+            let st = state.lock().unwrap();
+            write_status(&st, out)?;
+        }
     }
     out.flush()?;
     Ok(())
