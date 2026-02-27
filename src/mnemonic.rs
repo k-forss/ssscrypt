@@ -91,7 +91,11 @@ impl MnemonicPayload {
         y.copy_from_slice(&bytes[4..36]);
         let mut pubkey_prefix = [0u8; 4];
         pubkey_prefix.copy_from_slice(&bytes[36..40]);
-        Self { x, y, pubkey_prefix }
+        Self {
+            x,
+            y,
+            pubkey_prefix,
+        }
     }
 }
 
@@ -151,7 +155,11 @@ pub fn encode(payload: &MnemonicPayload) -> Vec<String> {
 /// Fails if a word is unrecognised or checksum is invalid.
 pub fn decode(input_words: &[&str]) -> Result<(MnemonicPayload, Vec<WordCorrection>)> {
     if input_words.len() != MNEMONIC_WORDS {
-        bail!("expected {} words, got {}", MNEMONIC_WORDS, input_words.len());
+        bail!(
+            "expected {} words, got {}",
+            MNEMONIC_WORDS,
+            input_words.len()
+        );
     }
 
     let mut corrections = Vec::new();
@@ -373,7 +381,10 @@ pub fn fuzzy_suggestions(input: &str) -> Vec<FuzzySuggestion> {
         .filter_map(|&w| {
             let d = levenshtein(&input_lower, w);
             if d <= MAX_EDIT_DISTANCE {
-                Some(FuzzySuggestion { word: w, distance: d })
+                Some(FuzzySuggestion {
+                    word: w,
+                    distance: d,
+                })
             } else {
                 None
             }
@@ -428,20 +439,14 @@ fn levenshtein(a: &str, b: &str) -> usize {
         return m.abs_diff(n);
     }
 
-    let mut prev = vec![0usize; n + 1];
+    let mut prev: Vec<usize> = (0..=n).collect();
     let mut curr = vec![0usize; n + 1];
-
-    for j in 0..=n {
-        prev[j] = j;
-    }
 
     for i in 1..=m {
         curr[0] = i;
         for j in 1..=n {
             let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)
-                .min(curr[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -457,13 +462,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 ///
 /// The card preserves case so the holder can reproduce the exact token list.
 #[cfg(test)]
-fn format_card(
-    words: &[String],
-    x: u32,
-    threshold: u8,
-    version: u8,
-    pubkey_hex: &str,
-) -> String {
+fn format_card(words: &[String], x: u32, threshold: u8, version: u8, pubkey_hex: &str) -> String {
     let mut out = String::new();
     out.push_str("┌──────────────────────────────────────┐\n");
     out.push_str(&format!(
@@ -477,7 +476,7 @@ fn format_card(
     out.push_str("├──────────────────────────────────────┤\n");
 
     // Rows of 4 words.
-    let num_rows = (words.len() + 3) / 4;
+    let num_rows = words.len().div_ceil(4);
     for row in 0..num_rows {
         let start = row * 4;
         let end = std::cmp::min(start + 4, words.len());

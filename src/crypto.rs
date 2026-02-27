@@ -79,8 +79,7 @@ pub fn encrypt(
     let nonce = XNonce::from_slice(&nonce_bytes);
 
     // Encrypt.
-    let cipher = XChaCha20Poly1305::new_from_slice(&keys.data_key)
-        .expect("key is 32 bytes");
+    let cipher = XChaCha20Poly1305::new_from_slice(&keys.data_key).expect("key is 32 bytes");
     let ciphertext = cipher
         .encrypt(nonce, plaintext)
         .map_err(|e| anyhow::anyhow!("encryption failed: {e}"))?;
@@ -136,8 +135,7 @@ pub fn decrypt(file: &EncryptedFile, keys: &DerivedKeys) -> Result<Vec<u8>> {
 
     // Decrypt.
     let nonce = XNonce::from_slice(&file.header.nonce);
-    let cipher = XChaCha20Poly1305::new_from_slice(&keys.data_key)
-        .expect("key is 32 bytes");
+    let cipher = XChaCha20Poly1305::new_from_slice(&keys.data_key).expect("key is 32 bytes");
     let plaintext = cipher
         .decrypt(nonce, file.ciphertext.as_ref())
         .map_err(|e| anyhow::anyhow!("decryption failed (corrupted data?): {e}"))?;
@@ -175,8 +173,7 @@ pub fn sign_share(raw: &RawShare, keys: &DerivedKeys, threshold: u8, group: &str
 
 /// Verify a share's Ed25519 signature against its embedded pubkey.
 pub fn verify_share_signature(share: &Share) -> Result<()> {
-    let pubkey = VerifyingKey::from_bytes(&share.pubkey)
-        .context("share: invalid pubkey")?;
+    let pubkey = VerifyingKey::from_bytes(&share.pubkey).context("share: invalid pubkey")?;
     let msg = share.signed_bytes()?;
     let sig = ed25519_dalek::Signature::from_bytes(&share.signature);
     pubkey
@@ -249,7 +246,7 @@ fn ingest_shares(
     } else {
         // Multiple groups — pick the largest, fail on tie.
         let mut sorted: Vec<_> = groups.into_values().collect();
-        sorted.sort_by(|a, b| b.len().cmp(&a.len()));
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.len()));
 
         if sorted[0].len() == sorted[1].len() {
             bail!(
@@ -408,8 +405,8 @@ mod tests {
             signed_shares[2].clone(),
             signed_shares[4].clone(),
         ];
-        let validated = ingest_shares(subset, Some(&keys.signing.verifying_key().to_bytes()))
-            .unwrap();
+        let validated =
+            ingest_shares(subset, Some(&keys.signing.verifying_key().to_bytes())).unwrap();
 
         let raw = shares_to_raw(&validated.shares);
         let recovered_master = sss::combine(&raw, validated.threshold).unwrap();
@@ -429,7 +426,10 @@ mod tests {
         let raw = sss::split(&master1, 2, 3).unwrap();
 
         // Sign with keys2 (wrong keys).
-        let shares: Vec<Share> = raw.iter().map(|r| sign_share(r, &keys2, 2, "").unwrap()).collect();
+        let shares: Vec<Share> = raw
+            .iter()
+            .map(|r| sign_share(r, &keys2, 2, "").unwrap())
+            .collect();
         let anchor = pubkey_bytes(&keys1.signing);
         assert!(ingest_shares(shares, Some(&anchor)).is_err());
     }

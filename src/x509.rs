@@ -11,11 +11,15 @@ use time::{Duration, OffsetDateTime};
 
 /// Generate a self-signed root CA certificate and its ECDSA P-256 key pair.
 ///
+/// `not_before` sets the certificate validity start; pass `OffsetDateTime::now_utc()`
+/// when a real clock is available, or an explicit date on air-gapped machines.
+///
 /// Returns `(cert_pem, key_pem)`.
 pub fn create_self_signed_root(
     cn: &str,
     org: Option<&str>,
     days: u32,
+    not_before: OffsetDateTime,
 ) -> Result<(String, String)> {
     let key_pair =
         KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).context("generate ECDSA P-256 key pair")?;
@@ -31,9 +35,8 @@ pub fn create_self_signed_root(
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
 
-    let now = OffsetDateTime::now_utc();
-    params.not_before = now;
-    params.not_after = now + Duration::days(days as i64);
+    params.not_before = not_before;
+    params.not_after = not_before + Duration::days(days as i64);
 
     let cert = params
         .self_signed(&key_pair)
@@ -48,11 +51,14 @@ pub fn create_self_signed_root(
 /// for rcgen, then signs the CSR with the requested validity and CA settings.
 ///
 /// Returns the signed certificate PEM.
+/// `not_before` sets the certificate validity start; pass `OffsetDateTime::now_utc()`
+/// when a real clock is available, or an explicit date on air-gapped machines.
 pub fn sign_csr(
     csr_pem: &str,
     issuer_cert_pem: &str,
     issuer_key_pem: &str,
     days: u32,
+    not_before: OffsetDateTime,
     is_ca: bool,
     pathlen: Option<u8>,
 ) -> Result<String> {
@@ -65,13 +71,11 @@ pub fn sign_csr(
         .context("reconstruct issuer certificate for signing")?;
 
     // Parse CSR.
-    let mut csr =
-        CertificateSigningRequestParams::from_pem(csr_pem).context("parse CSR PEM")?;
+    let mut csr = CertificateSigningRequestParams::from_pem(csr_pem).context("parse CSR PEM")?;
 
     // Validity period.
-    let now = OffsetDateTime::now_utc();
-    csr.params.not_before = now;
-    csr.params.not_after = now + Duration::days(days as i64);
+    csr.params.not_before = not_before;
+    csr.params.not_after = not_before + Duration::days(days as i64);
 
     // CA / key-usage settings.
     if is_ca {
@@ -79,8 +83,7 @@ pub fn sign_csr(
             Some(n) => IsCa::Ca(BasicConstraints::Constrained(n)),
             None => IsCa::Ca(BasicConstraints::Unconstrained),
         };
-        csr.params.key_usages =
-            vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        csr.params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
     } else {
         csr.params.is_ca = IsCa::NoCa;
         csr.params.key_usages = vec![
@@ -102,8 +105,9 @@ mod tests {
 
     #[test]
     fn create_root_roundtrip() {
+        let now = OffsetDateTime::now_utc();
         let (cert_pem, key_pem) =
-            create_self_signed_root("Test Root CA", Some("Test Org"), 365).unwrap();
+            create_self_signed_root("Test Root CA", Some("Test Org"), 365, now).unwrap();
         assert!(cert_pem.starts_with("-----BEGIN CERTIFICATE-----"));
         assert!(key_pem.starts_with("-----BEGIN PRIVATE KEY-----"));
 
@@ -114,13 +118,13 @@ mod tests {
 
     #[test]
     fn sign_csr_roundtrip() {
+        let now = OffsetDateTime::now_utc();
         // Generate a root CA.
         let (issuer_cert_pem, issuer_key_pem) =
-            create_self_signed_root("Test Root CA", None, 3650).unwrap();
+            create_self_signed_root("Test Root CA", None, 3650, now).unwrap();
 
         // Generate a subject key and CSR.
-        let subject_key =
-            KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let subject_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
         let mut csr_params = CertificateParams::default();
         let mut dn = DistinguishedName::new();
         dn.push(DnType::CommonName, "Intermediate CA");
@@ -129,8 +133,16 @@ mod tests {
         let csr_pem = csr.pem().unwrap();
 
         // Sign it.
-        let signed_pem =
-            sign_csr(&csr_pem, &issuer_cert_pem, &issuer_key_pem, 1825, true, Some(0)).unwrap();
+        let signed_pem = sign_csr(
+            &csr_pem,
+            &issuer_cert_pem,
+            &issuer_key_pem,
+            1825,
+            now,
+            true,
+            Some(0),
+        )
+        .unwrap();
         assert!(signed_pem.starts_with("-----BEGIN CERTIFICATE-----"));
     }
 }

@@ -74,9 +74,7 @@ const BORDER: u32 = 3;
 /// font8x8 convention: each glyph is `[u8; 8]`, one byte per row,
 /// bit 0 (LSB) = leftmost pixel.
 fn draw_char(img: &mut GrayImage, x: u32, y: u32, ch: char, scale: u32) {
-    let glyph = font8x8::BASIC_FONTS
-        .get(ch)
-        .unwrap_or([0u8; 8]);
+    let glyph = font8x8::BASIC_FONTS.get(ch).unwrap_or([0u8; 8]);
     for (row, &bits) in glyph.iter().enumerate() {
         for col in 0u32..8 {
             if bits & (1 << col) != 0 {
@@ -139,7 +137,7 @@ fn draw_rect(img: &mut GrayImage, x: u32, y: u32, w: u32, h: u32, thick: u32) {
                 img.put_pixel(x + dx, y + t, Luma([0u8]));
             }
             // Bottom
-            if y + h - 1 >= t && y + h - 1 - t < img.height() {
+            if y + h > t && y + h - 1 - t < img.height() {
                 img.put_pixel(x + dx, y + h - 1 - t, Luma([0u8]));
             }
         }
@@ -149,7 +147,7 @@ fn draw_rect(img: &mut GrayImage, x: u32, y: u32, w: u32, h: u32, thick: u32) {
                 img.put_pixel(x + t, y + dy, Luma([0u8]));
             }
             // Right
-            if x + w - 1 >= t && x + w - 1 - t < img.width() {
+            if x + w > t && x + w - 1 - t < img.width() {
                 img.put_pixel(x + w - 1 - t, y + dy, Luma([0u8]));
             }
         }
@@ -228,10 +226,7 @@ fn draw_qr(img: &mut GrayImage, x: u32, y: u32, qr: &QrCode) {
 /// │  UPPER = 1    lower = 0         │
 /// └──────────────────────────────────┘
 /// ```
-pub fn render_card(
-    share: &Share,
-    mnemonic_words: &[String],
-) -> Result<GrayImage> {
+pub fn render_card(share: &Share, mnemonic_words: &[String]) -> Result<GrayImage> {
     let label = &share.group;
     // ── Generate QR matrix ──────────────────────────────────────
     let payload = qr_payload(share)?;
@@ -350,11 +345,7 @@ pub fn render_card(
 /// - `.jpg` / `.jpeg` — JPEG at 95% quality (recommended for printing)
 /// - `.png` — lossless PNG (larger file, safest for QR scanning)
 /// - anything else — defaults to PNG
-pub fn save_card(
-    share: &Share,
-    mnemonic_words: &[String],
-    path: &Path,
-) -> Result<()> {
+pub fn save_card(share: &Share, mnemonic_words: &[String], path: &Path) -> Result<()> {
     let img = render_card(share, mnemonic_words)?;
 
     let ext = path
@@ -400,8 +391,7 @@ fn scan_card(path: &Path) -> Result<Share> {
         .with_context(|| format!("cannot open image {}", path.display()))?
         .into_luma8();
 
-    scan_image(&img)
-        .with_context(|| format!("no valid QR share found in {}", path.display()))
+    scan_image(&img).with_context(|| format!("no valid QR share found in {}", path.display()))
 }
 
 /// Scan a grayscale image buffer and extract the first QR code as a `Share`.
@@ -437,9 +427,7 @@ fn scan_image(img: &GrayImage) -> Result<Share> {
 /// Returns `(shares, errors)` — shares that decoded successfully and a list
 /// of `(path, error)` pairs for images that failed.
 #[cfg(test)]
-fn scan_all_cards(
-    paths: &[&Path],
-) -> (Vec<Share>, Vec<(std::path::PathBuf, anyhow::Error)>) {
+fn scan_all_cards(paths: &[&Path]) -> (Vec<Share>, Vec<(std::path::PathBuf, anyhow::Error)>) {
     let mut shares = Vec::new();
     let mut errors = Vec::new();
 
@@ -476,10 +464,9 @@ mod tests {
     fn test_words() -> Vec<String> {
         // 28 dummy words matching mnemonic format (mixed case)
         let raw = [
-            "abandon", "ABSORB", "abstract", "ABSURD", "accident", "ACCOUNT",
-            "accuse", "ACHIEVE", "acoustic", "ACQUIRE", "actress", "ADVICE",
-            "aerobic", "AFFORD", "afraid", "AIRPORT", "album", "ALCOHOL",
-            "almost", "ALTER", "amazing", "AMONG", "amount", "AMUSED",
+            "abandon", "ABSORB", "abstract", "ABSURD", "accident", "ACCOUNT", "accuse", "ACHIEVE",
+            "acoustic", "ACQUIRE", "actress", "ADVICE", "aerobic", "AFFORD", "afraid", "AIRPORT",
+            "album", "ALCOHOL", "almost", "ALTER", "amazing", "AMONG", "amount", "AMUSED",
             "anchor", "ANCIENT", "anger", "ANNOUNCE",
         ];
         raw.iter().map(|s| s.to_string()).collect()
@@ -528,7 +515,10 @@ mod tests {
     fn render_card_has_dark_content() {
         let img = render_card(&test_share(), &test_words()).unwrap();
         let dark = img.pixels().filter(|p| p.0[0] < 128).count();
-        assert!(dark > 1000, "expected dark pixels for text + QR, got {dark}");
+        assert!(
+            dark > 1000,
+            "expected dark pixels for text + QR, got {dark}"
+        );
     }
 
     #[test]

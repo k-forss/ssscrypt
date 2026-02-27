@@ -106,13 +106,7 @@ impl fmt::Display for Header {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let pk: String = self.pubkey.iter().map(|b| format!("{b:02x}")).collect();
         if self.group.is_empty() {
-            write!(
-                f,
-                "v{} k={} pk={}",
-                self.version,
-                self.threshold,
-                &pk[..16]
-            )
+            write!(f, "v{} k={} pk={}", self.version, self.threshold, &pk[..16])
         } else {
             write!(
                 f,
@@ -230,8 +224,7 @@ impl EncryptedFile {
         let pk_hex = hex_full(&self.header.pubkey);
 
         // data = nonce(24) ++ ciphertext
-        let mut data_bytes =
-            Vec::with_capacity(NONCE_LEN + self.ciphertext.len());
+        let mut data_bytes = Vec::with_capacity(NONCE_LEN + self.ciphertext.len());
         data_bytes.extend_from_slice(&self.header.nonce);
         data_bytes.extend_from_slice(&self.ciphertext);
         let data_b64 = B64.encode(&data_bytes);
@@ -274,25 +267,16 @@ impl EncryptedFile {
             .map(|s| s.as_str())
             .unwrap_or("")
             .to_string();
-        let group_len = group.as_bytes().len();
+        let group_len = group.len();
         if group_len > MAX_GROUP_LEN {
-            bail!(
-                "encrypted: group name is {group_len} bytes, exceeds maximum of {MAX_GROUP_LEN}"
-            );
+            bail!("encrypted: group name is {group_len} bytes, exceeds maximum of {MAX_GROUP_LEN}");
         }
 
-        let pubkey_hex = fields
-            .get("pubkey")
-            .context("missing 'pubkey' field")?;
-        let pubkey =
-            parse_hex_32(pubkey_hex).context("invalid pubkey hex")?;
+        let pubkey_hex = fields.get("pubkey").context("missing 'pubkey' field")?;
+        let pubkey = parse_hex_32(pubkey_hex).context("invalid pubkey hex")?;
 
-        let data_b64 = fields
-            .get("data")
-            .context("missing 'data' field")?;
-        let data_bytes = B64
-            .decode(data_b64.trim())
-            .context("invalid data base64")?;
+        let data_b64 = fields.get("data").context("missing 'data' field")?;
+        let data_bytes = B64.decode(data_b64.trim()).context("invalid data base64")?;
 
         if data_bytes.len() < NONCE_LEN {
             bail!(
@@ -311,10 +295,7 @@ impl EncryptedFile {
             .decode(sig_b64.trim())
             .context("invalid signature base64")?;
         if sig_bytes.len() != SIG_LEN {
-            bail!(
-                "signature must be {SIG_LEN} bytes, got {}",
-                sig_bytes.len()
-            );
+            bail!("signature must be {SIG_LEN} bytes, got {}", sig_bytes.len());
         }
         let mut signature = [0u8; 64];
         signature.copy_from_slice(&sig_bytes);
@@ -385,10 +366,7 @@ fn parse_kv(text: &str) -> HashMap<String, String> {
 fn parse_hex_32(hex: &str) -> Result<[u8; 32]> {
     let hex = hex.trim();
     if hex.len() != 64 {
-        bail!(
-            "expected 64 hex chars (32 bytes), got {} chars",
-            hex.len()
-        );
+        bail!("expected 64 hex chars (32 bytes), got {} chars", hex.len());
     }
     let mut out = [0u8; 32];
     for i in 0..32 {

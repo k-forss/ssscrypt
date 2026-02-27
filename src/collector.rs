@@ -185,10 +185,16 @@ impl std::fmt::Display for AddResult {
                 write!(f, "share #{x} rejected: invalid signature ({e})")
             }
             AddResult::PubkeyMismatch(x) => {
-                write!(f, "share #{x} rejected: pubkey does not match existing shares")
+                write!(
+                    f,
+                    "share #{x} rejected: pubkey does not match existing shares"
+                )
             }
             AddResult::PubkeyPrefixMismatch(x) => {
-                write!(f, "share #{x} rejected: pubkey prefix does not match existing shares")
+                write!(
+                    f,
+                    "share #{x} rejected: pubkey prefix does not match existing shares"
+                )
             }
             AddResult::ThresholdMismatch(x, expected, got) => {
                 write!(
@@ -261,7 +267,9 @@ pub fn collect_shares(
         );
         if st.complete {
             eprintln!("  enough shares — skipping interactive mode");
-            let threshold = st.threshold.ok_or_else(|| anyhow::anyhow!("threshold unknown"))?;
+            let threshold = st
+                .threshold
+                .ok_or_else(|| anyhow::anyhow!("threshold unknown"))?;
             let pubkey = st.pubkey.ok_or_else(|| anyhow::anyhow!("pubkey unknown"))?;
             return Ok(CollectedShares {
                 shares: std::mem::take(&mut st.shares),
@@ -300,12 +308,12 @@ pub fn collect_shares(
     if st.shares.is_empty() {
         bail!("no shares collected");
     }
-    let threshold = st.threshold.ok_or_else(|| anyhow::anyhow!(
-        "threshold unknown — need at least one file/QR share or --anchor-encrypted"
-    ))?;
-    let pubkey = st.pubkey.ok_or_else(|| anyhow::anyhow!(
-        "pubkey unknown — need at least one file/QR share or --anchor-encrypted"
-    ))?;
+    let threshold = st.threshold.ok_or_else(|| {
+        anyhow::anyhow!("threshold unknown — need at least one file/QR share or --anchor-encrypted")
+    })?;
+    let pubkey = st.pubkey.ok_or_else(|| {
+        anyhow::anyhow!("pubkey unknown — need at least one file/QR share or --anchor-encrypted")
+    })?;
     Ok(CollectedShares {
         shares: st.shares.clone(),
         threshold,
@@ -395,19 +403,13 @@ fn run_raw_loop(
                             write_status(&st, out)?;
                             words.clear();
                             if st.complete {
-                                write!(
-                                    out,
-                                    "\r\n  \x1b[32m✓ Enough shares collected!\x1b[0m\r\n"
-                                )?;
+                                write!(out, "\r\n  \x1b[32m✓ Enough shares collected!\x1b[0m\r\n")?;
                                 out.flush()?;
                                 return Ok(());
                             }
                         }
                         Err(e) => {
-                            write!(
-                                out,
-                                "\r\n  \x1b[31m✗ decode error: {e}\x1b[0m\r\n"
-                            )?;
+                            write!(out, "\r\n  \x1b[31m✗ decode error: {e}\x1b[0m\r\n")?;
                             write!(out, "  clearing — please re-enter this share\r\n\r\n")?;
                             words.clear();
                         }
@@ -580,11 +582,7 @@ fn render_prompt(
 }
 
 /// Replace the current prompt line with a green-check accepted word.
-fn show_accepted(
-    word_num: usize,
-    word: &str,
-    out: &mut impl Write,
-) -> std::io::Result<()> {
+fn show_accepted(word_num: usize, word: &str, out: &mut impl Write) -> std::io::Result<()> {
     write!(
         out,
         "\r\x1b[2K[{}/{}] \x1b[32m✓\x1b[0m {}\r\n",
@@ -696,7 +694,10 @@ fn try_accept(typed: &str, comp: &mnemonic::Completion) -> Option<String> {
     }
 
     // Full word typed — check wordlist (case-consistent since comp isn't MixedCase).
-    if matches!(mnemonic::validate_word(typed), mnemonic::WordValidation::Valid(_)) {
+    if matches!(
+        mnemonic::validate_word(typed),
+        mnemonic::WordValidation::Valid(_)
+    ) {
         Some(typed.to_string())
     } else {
         None
@@ -974,11 +975,7 @@ impl eframe::App for ScannerApp {
                     )
                     .show_ui(ui, |ui| {
                         for (i, dev) in self.devices.iter().enumerate() {
-                            ui.selectable_value(
-                                &mut self.selected_device,
-                                i,
-                                dev.human_name(),
-                            );
+                            ui.selectable_value(&mut self.selected_device, i, dev.human_name());
                         }
                     });
                 if self.selected_device != prev {
@@ -987,7 +984,11 @@ impl eframe::App for ScannerApp {
 
                 ui.separator();
 
-                let btn_label = if self.scanning { "⏸ Pause" } else { "▶ Scan" };
+                let btn_label = if self.scanning {
+                    "⏸ Pause"
+                } else {
+                    "▶ Scan"
+                };
                 if ui.button(btn_label).clicked() {
                     self.scanning = !self.scanning;
                 }

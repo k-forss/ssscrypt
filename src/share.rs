@@ -228,11 +228,9 @@ impl Share {
             .map(|s| s.as_str())
             .unwrap_or("")
             .to_string();
-        let group_len = group.as_bytes().len();
+        let group_len = group.len();
         if group_len > MAX_GROUP_LEN {
-            bail!(
-                "share: group name is {group_len} bytes, exceeds maximum of {MAX_GROUP_LEN}"
-            );
+            bail!("share: group name is {group_len} bytes, exceeds maximum of {MAX_GROUP_LEN}");
         }
 
         let pubkey_hex = fields
@@ -240,9 +238,7 @@ impl Share {
             .context("share: missing 'pubkey' field")?;
         let pubkey = parse_hex_32(pubkey_hex).context("share: invalid pubkey hex")?;
 
-        let data_b64 = fields
-            .get("data")
-            .context("share: missing 'data' field")?;
+        let data_b64 = fields.get("data").context("share: missing 'data' field")?;
         let data_bytes = B64
             .decode(data_b64.trim())
             .context("share: invalid data base64")?;
@@ -286,16 +282,14 @@ impl Share {
 
     /// Read from a `.share.txt` file.
     pub fn from_file(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("read share file {:?}", path))?;
-        Self::from_text(&text)
-            .with_context(|| format!("parse share file {:?}", path))
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("read share file {:?}", path))?;
+        Self::from_text(&text).with_context(|| format!("parse share file {:?}", path))
     }
 
     /// Write to a `.share.txt` file.
     pub fn to_file(&self, path: &Path) -> Result<()> {
-        std::fs::write(path, self.to_text())
-            .with_context(|| format!("write share file {:?}", path))
+        std::fs::write(path, self.to_text()).with_context(|| format!("write share file {:?}", path))
     }
 
     /// Generate the filename for this share.
@@ -418,10 +412,7 @@ fn parse_kv(text: &str) -> HashMap<String, String> {
 fn parse_hex_32(hex: &str) -> Result<[u8; 32]> {
     let hex = hex.trim();
     if hex.len() != 64 {
-        bail!(
-            "expected 64 hex chars (32 bytes), got {} chars",
-            hex.len()
-        );
+        bail!("expected 64 hex chars (32 bytes), got {} chars", hex.len());
     }
     let mut out = [0u8; 32];
     for i in 0..32 {

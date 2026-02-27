@@ -7,6 +7,8 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
+use time::macros::format_description;
+use time::OffsetDateTime;
 use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Subcommand, Debug)]
@@ -174,7 +176,10 @@ pub struct CreateRootArgs {
     #[arg(long)]
     pub days: Option<u32>,
 
-    /// Output root certificate PEM file
+    /// Certificate not-before date (YYYY-MM-DD); defaults to system clock.
+    /// Use this on air-gapped machines where the RTC may be wrong.
+    #[arg(long, value_name = "DATE")]
+    pub not_before: Option<String>,
     #[arg(long)]
     pub out_cert: Option<PathBuf>,
 
@@ -217,6 +222,11 @@ pub struct SignCsrArgs {
     #[arg(long)]
     pub days: Option<u32>,
 
+    /// Certificate not-before date (YYYY-MM-DD); defaults to system clock.
+    /// Use this on air-gapped machines where the RTC may be wrong.
+    #[arg(long, value_name = "DATE")]
+    pub not_before: Option<String>,
+
     /// Mark the issued certificate as a CA (skip prompt)
     #[arg(long)]
     pub is_ca: bool,
@@ -252,8 +262,11 @@ pub fn run(command: Command) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn encrypt(args: EncryptArgs) -> Result<()> {
-    let has_existing = args.shares_dir.is_some() || args.pin.pin_pubkey.is_some() || args.pin.anchor_encrypted.is_some();
-    let has_new = args.threshold.is_some() || args.num_shares.is_some() || args.new_shares_dir.is_some();
+    let has_existing = args.shares_dir.is_some()
+        || args.pin.pin_pubkey.is_some()
+        || args.pin.anchor_encrypted.is_some();
+    let has_new =
+        args.threshold.is_some() || args.num_shares.is_some() || args.new_shares_dir.is_some();
 
     if !has_existing && !has_new {
         bail!(
@@ -264,9 +277,17 @@ fn encrypt(args: EncryptArgs) -> Result<()> {
 
     // If creating new shares, all three are required.
     let new_share_params = if has_new {
-        let threshold = args.threshold.ok_or_else(|| anyhow::anyhow!("--threshold required when creating new shares"))?;
-        let num_shares = args.num_shares.ok_or_else(|| anyhow::anyhow!("--num-shares required when creating new shares"))?;
-        let dir = args.new_shares_dir.as_ref().ok_or_else(|| anyhow::anyhow!("--new-shares-dir required when creating new shares"))?.clone();
+        let threshold = args
+            .threshold
+            .ok_or_else(|| anyhow::anyhow!("--threshold required when creating new shares"))?;
+        let num_shares = args
+            .num_shares
+            .ok_or_else(|| anyhow::anyhow!("--num-shares required when creating new shares"))?;
+        let dir = args
+            .new_shares_dir
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("--new-shares-dir required when creating new shares"))?
+            .clone();
         validate_threshold(threshold, num_shares)?;
         Some((threshold, num_shares, dir))
     } else {
@@ -281,12 +302,11 @@ fn encrypt(args: EncryptArgs) -> Result<()> {
     let (master, existing_threshold) = if has_existing {
         // Resolve anchor for unanchored operation.
         let anchor = resolve_anchor(&args.pin)?;
-        let collected = gather_shares(
-            args.shares_dir.as_deref(),
-            anchor.as_ref(),
-            None,
-        )?;
-        eprintln!("encrypt: reconstructing key from {} share(s)", collected.shares.len());
+        let collected = gather_shares(args.shares_dir.as_deref(), anchor.as_ref(), None)?;
+        eprintln!(
+            "encrypt: reconstructing key from {} share(s)",
+            collected.shares.len()
+        );
         let raw = crypto::shares_to_raw(&collected.shares);
         let master = Zeroizing::new(sss::combine(&raw, collected.threshold)?);
         (master, Some((collected.threshold, collected.pubkey)))
@@ -297,7 +317,9 @@ fn encrypt(args: EncryptArgs) -> Result<()> {
     };
 
     // Derive keys.
-    let threshold_hint = new_share_params.as_ref().map(|(k, _, _)| *k)
+    let threshold_hint = new_share_params
+        .as_ref()
+        .map(|(k, _, _)| *k)
         .or(existing_threshold.map(|(t, _)| t))
         .unwrap_or(2);
     let keys = crypto::derive_keys(&master);
@@ -306,7 +328,9 @@ fn encrypt(args: EncryptArgs) -> Result<()> {
     if let Some((_, expected_pk)) = existing_threshold {
         let derived_pk = crypto::pubkey_bytes(&keys.signing);
         if derived_pk != expected_pk {
-            bail!("derived pubkey does not match share pubkey — wrong shares or share substitution?");
+            bail!(
+                "derived pubkey does not match share pubkey — wrong shares or share substitution?"
+            );
         }
         eprintln!("encrypt: verified pubkey from shares");
     }
@@ -346,18 +370,13 @@ fn decrypt(args: DecryptArgs) -> Result<()> {
     let data = io::read_input(&args.io)?;
     eprintln!("decrypt: read {} bytes", data.len());
 
-    let encrypted = EncryptedFile::parse(&data)
-        .context("failed to parse encrypted file")?;
+    let encrypted = EncryptedFile::parse(&data).context("failed to parse encrypted file")?;
     eprintln!("decrypt: {}", encrypted.header);
 
     // Gather shares — anchor pubkey and threshold from header.
     let anchor = encrypted.header.pubkey;
     let threshold = encrypted.header.threshold;
-    let collected = gather_shares(
-        args.shares_dir.as_deref(),
-        Some(&anchor),
-        Some(threshold),
-    )?;
+    let collected = gather_shares(args.shares_dir.as_deref(), Some(&anchor), Some(threshold))?;
 
     // Reconstruct master key.
     let raw = crypto::shares_to_raw(&collected.shares);
@@ -380,17 +399,12 @@ fn rotate(args: RotateArgs) -> Result<()> {
     let data = io::read_input(&args.io)?;
     eprintln!("rotate: read {} bytes", data.len());
 
-    let encrypted = EncryptedFile::parse(&data)
-        .context("failed to parse encrypted file")?;
+    let encrypted = EncryptedFile::parse(&data).context("failed to parse encrypted file")?;
 
     // Gather old shares — anchor from header.
     let anchor = encrypted.header.pubkey;
     let threshold = encrypted.header.threshold;
-    let collected = gather_shares(
-        args.shares_dir.as_deref(),
-        Some(&anchor),
-        Some(threshold),
-    )?;
+    let collected = gather_shares(args.shares_dir.as_deref(), Some(&anchor), Some(threshold))?;
 
     let raw = crypto::shares_to_raw(&collected.shares);
     let old_master = Zeroizing::new(sss::combine(&raw, collected.threshold)?);
@@ -427,9 +441,7 @@ fn rotate(args: RotateArgs) -> Result<()> {
     io::write_shares(&args.new_shares.new_shares_dir, &new_signed?)?;
     eprintln!(
         "rotate: wrote {}-of-{} new shares to {:?}",
-        new_threshold,
-        args.new_shares.num_shares,
-        args.new_shares.new_shares_dir
+        new_threshold, args.new_shares.num_shares, args.new_shares.new_shares_dir
     );
 
     // new_master and new_keys are zeroized on drop.
@@ -441,16 +453,14 @@ fn gen_shares(args: GenSharesArgs) -> Result<()> {
     let anchor = resolve_anchor(&args.pin)?;
 
     // Gather old shares.
-    let collected = gather_shares(
-        args.shares_dir.as_deref(),
-        anchor.as_ref(),
-        None,
-    )?;
+    let collected = gather_shares(args.shares_dir.as_deref(), anchor.as_ref(), None)?;
 
     // Threshold and group are inherited from the collected shares — gen-shares
     // re-splits the same key, so these properties must not change.
     let threshold = collected.threshold;
-    let group = collected.shares.first()
+    let group = collected
+        .shares
+        .first()
         .map(|s| s.group.clone())
         .unwrap_or_default();
     validate_threshold(threshold, args.num_shares)?;
@@ -477,9 +487,7 @@ fn gen_shares(args: GenSharesArgs) -> Result<()> {
     io::write_shares(&args.new_shares_dir, &new_signed?)?;
     eprintln!(
         "gen-shares: wrote {}-of-{} new shares to {:?} (random x values)",
-        threshold,
-        args.num_shares,
-        args.new_shares_dir
+        threshold, args.num_shares, args.new_shares_dir
     );
 
     // master and keys are zeroized on drop.
@@ -502,7 +510,11 @@ fn x509_create_root(args: CreateRootArgs) -> Result<()> {
         Some(v) => Some(v),
         None => {
             let v = prompt("Organization (O, empty to skip)", Some(""))?;
-            if v.is_empty() { None } else { Some(v) }
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
         }
     };
     let days: u32 = match args.days {
@@ -539,14 +551,22 @@ fn x509_create_root(args: CreateRootArgs) -> Result<()> {
     eprintln!();
     validate_threshold(threshold, shares)?;
 
+    // Resolve the not-before date (system clock unless --not-before was given).
+    let not_before = resolve_not_before(args.not_before.as_deref())?;
+    let not_after = not_before + time::Duration::days(days as i64);
+    eprintln!(
+        "x509: validity: {} → {}",
+        not_before.date(),
+        not_after.date()
+    );
+
     // Generate root CA certificate + key pair.
     let (cert_pem, key_pem) =
-        crate::x509::create_self_signed_root(&cn, org.as_deref(), days)?;
+        crate::x509::create_self_signed_root(&cn, org.as_deref(), days, not_before)?;
     eprintln!("x509: generated self-signed root CA: {}", cn);
 
     // Write certificate PEM.
-    std::fs::write(&out_cert, &cert_pem)
-        .with_context(|| format!("write cert {:?}", out_cert))?;
+    std::fs::write(&out_cert, &cert_pem).with_context(|| format!("write cert {:?}", out_cert))?;
     eprintln!("x509: wrote certificate: {:?}", out_cert);
 
     // Encrypt the private key using ssscrypt.
@@ -630,33 +650,32 @@ fn x509_sign_csr(args: SignCsrArgs) -> Result<()> {
         Some(d) => Some(d),
         None => {
             let v = prompt("Shares directory (empty for interactive)", Some(""))?;
-            if v.is_empty() { None } else { Some(PathBuf::from(v)) }
+            if v.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(v))
+            }
         }
     };
 
     eprintln!();
 
     // Read encrypted key file.
-    let enc_data = std::fs::read(&key_enc)
-        .with_context(|| format!("read encrypted key {:?}", key_enc))?;
-    let encrypted =
-        EncryptedFile::parse(&enc_data).context("parse encrypted key file")?;
+    let enc_data =
+        std::fs::read(&key_enc).with_context(|| format!("read encrypted key {:?}", key_enc))?;
+    let encrypted = EncryptedFile::parse(&enc_data).context("parse encrypted key file")?;
     eprintln!("x509: encrypted key: {}", encrypted.header);
 
     // Read issuer certificate and CSR.
     let issuer_cert_pem = std::fs::read_to_string(&issuer_cert)
         .with_context(|| format!("read issuer cert {:?}", issuer_cert))?;
-    let csr_pem = std::fs::read_to_string(&csr_path)
-        .with_context(|| format!("read CSR {:?}", csr_path))?;
+    let csr_pem =
+        std::fs::read_to_string(&csr_path).with_context(|| format!("read CSR {:?}", csr_path))?;
 
     // Gather shares to decrypt the CA key (anchored by the encrypted file's pubkey).
     let anchor = encrypted.header.pubkey;
     let threshold = encrypted.header.threshold;
-    let collected = gather_shares(
-        shares_dir.as_deref(),
-        Some(&anchor),
-        Some(threshold),
-    )?;
+    let collected = gather_shares(shares_dir.as_deref(), Some(&anchor), Some(threshold))?;
 
     // Reconstruct master key and decrypt the CA private key.
     let raw = crypto::shares_to_raw(&collected.shares);
@@ -671,12 +690,22 @@ fn x509_sign_csr(args: SignCsrArgs) -> Result<()> {
     drop(master);
     drop(keys);
 
+    // Resolve the not-before date (system clock unless --not-before was given).
+    let not_before = resolve_not_before(args.not_before.as_deref())?;
+    let not_after = not_before + time::Duration::days(days as i64);
+    eprintln!(
+        "x509: validity: {} → {}",
+        not_before.date(),
+        not_after.date()
+    );
+
     // Sign the CSR.
     let signed_pem = crate::x509::sign_csr(
         &csr_pem,
         &issuer_cert_pem,
         &key_pem,
         days,
+        not_before,
         is_ca,
         pathlen,
     )?;
@@ -728,6 +757,22 @@ fn validate_threshold(threshold: u8, shares: u8) -> Result<()> {
     Ok(())
 }
 
+/// Parse a `--not-before YYYY-MM-DD` value into an `OffsetDateTime` at midnight UTC.
+///
+/// Returns `now_utc()` when `None` is supplied.
+fn resolve_not_before(raw: Option<&str>) -> Result<OffsetDateTime> {
+    match raw {
+        Some(s) => {
+            let fmt = format_description!("[year]-[month]-[day]");
+            let date = time::Date::parse(s, &fmt).with_context(|| {
+                format!("invalid --not-before date: {s:?} (expected YYYY-MM-DD)")
+            })?;
+            Ok(date.with_hms(0, 0, 0).unwrap().assume_utc())
+        }
+        None => Ok(OffsetDateTime::now_utc()),
+    }
+}
+
 /// Resolve the anchor pubkey from --pin-pubkey or --anchor-encrypted.
 fn resolve_anchor(pin: &PinArgs) -> Result<Option<[u8; 32]>> {
     match (&pin.pin_pubkey, &pin.anchor_encrypted) {
@@ -741,8 +786,8 @@ fn resolve_anchor(pin: &PinArgs) -> Result<Option<[u8; 32]>> {
         }
         (None, Some(path)) => {
             // Read header from encrypted file.
-            let data = std::fs::read(path)
-                .with_context(|| format!("read anchor file {:?}", path))?;
+            let data =
+                std::fs::read(path).with_context(|| format!("read anchor file {:?}", path))?;
             let encrypted = EncryptedFile::parse(&data)
                 .with_context(|| format!("parse anchor file {:?}", path))?;
             eprintln!("  anchor pubkey from {:?}", path);

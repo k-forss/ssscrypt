@@ -68,7 +68,9 @@ pub fn split_random_x(
     while xs.len() < n as usize {
         let x = loop {
             let v = rng.next_u32();
-            if v != 0 { break v; }
+            if v != 0 {
+                break v;
+            }
         };
         if !exclude.contains(&x) {
             xs.insert(x);
@@ -110,8 +112,8 @@ fn split_xs_with_rng<R: RngCore + CryptoRng>(
     let mut coeffs = vec![vec![0u32; kt]; ELEMENTS];
     for e in 0..ELEMENTS {
         coeffs[e][0] = secret_elems[e];
-        for d in 1..kt {
-            coeffs[e][d] = rng.next_u32();
+        for c in coeffs[e][1..].iter_mut() {
+            *c = rng.next_u32();
         }
     }
 
@@ -200,11 +202,10 @@ fn interpolate_at_zero<I: Iterator<Item = (u32, u32)>>(points: I) -> u32 {
         let (xi, yi) = pts[i];
         let mut num = 1u32;
         let mut den = 1u32;
-        for j in 0..pts.len() {
+        for (j, &(xj, _)) in pts.iter().enumerate() {
             if i == j {
                 continue;
             }
-            let (xj, _) = pts[j];
             num = gf_mul(num, xj);
             den = gf_mul(den, gf_add(xi, xj)); // sub = add in GF(2^n)
         }
@@ -333,7 +334,13 @@ mod tests {
             assert_eq!(gf_mul(a, 0), 0);
         }
         // Test some large values.
-        for a in [0xDEAD_BEEF, 0xCAFE_BABE, 0xFFFF_FFFF, 0x8000_0000, 0x1234_5678] {
+        for a in [
+            0xDEAD_BEEF,
+            0xCAFE_BABE,
+            0xFFFF_FFFF,
+            0x8000_0000,
+            0x1234_5678,
+        ] {
             assert_eq!(gf_mul(a, 1), a, "identity failed for {a:#x}");
             assert_eq!(gf_mul(1, a), a, "identity failed for {a:#x}");
             assert_eq!(gf_mul(a, 0), 0, "zero mul failed for {a:#x}");
@@ -345,7 +352,13 @@ mod tests {
         for a in 1u32..=1000 {
             assert_eq!(gf_mul(a, gf_inv(a)), 1, "gf_inv failed for {a}");
         }
-        for a in [0xDEAD_BEEF, 0xCAFE_BABE, 0xFFFF_FFFF, 0x8000_0000, 0x1234_5678] {
+        for a in [
+            0xDEAD_BEEF,
+            0xCAFE_BABE,
+            0xFFFF_FFFF,
+            0x8000_0000,
+            0x1234_5678,
+        ] {
             assert_eq!(gf_mul(a, gf_inv(a)), 1, "gf_inv failed for {a:#x}");
         }
     }
@@ -376,7 +389,11 @@ mod tests {
         let secret = [0xcd; SECRET_LEN];
         let shares = split_random_x(&secret, 2, 5, &[]).unwrap();
         let xs: Vec<u32> = shares.iter().map(|s| s.x).collect();
-        assert_ne!(xs, vec![1, 2, 3, 4, 5], "random u32 x values should not be sequential");
+        assert_ne!(
+            xs,
+            vec![1, 2, 3, 4, 5],
+            "random u32 x values should not be sequential"
+        );
     }
 
     #[test]

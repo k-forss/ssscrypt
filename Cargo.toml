@@ -2,6 +2,7 @@
 name = "ssscrypt"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.70"
 license = "MIT OR Apache-2.0"
 description = "Encrypt files with Shamir secret sharing — split the key into QR cards with mnemonic backup words. Designed for offline PKI ceremonies."
 repository = "https://github.com/k-forss/ssscrypt"
