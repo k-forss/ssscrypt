@@ -271,6 +271,72 @@ pub fn tab_complete(prefix: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// Result of attempting to complete a prefix against the wordlist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Completion {
+    /// Exactly one word matches — show as shadow.
+    Unique(String),
+    /// Multiple words match — input is in progress, keep typing.
+    Ambiguous,
+    /// Empty prefix — nothing typed yet.
+    Empty,
+    /// No words match this prefix — the input is wrong.
+    NoMatch,
+    /// Prefix has inconsistent (mixed) case.
+    MixedCase,
+}
+
+impl Completion {
+    /// If the completion is `Unique`, return the word; otherwise `None`.
+    pub fn word(&self) -> Option<&str> {
+        match self {
+            Completion::Unique(w) => Some(w),
+            _ => None,
+        }
+    }
+
+    /// True when the prefix is detected as erroneous (`NoMatch` or `MixedCase`).
+    pub fn is_error(&self) -> bool {
+        matches!(self, Completion::NoMatch | Completion::MixedCase)
+    }
+}
+
+/// Compute the completion state for a prefix against the wordlist.
+///
+/// - `Unique(word)` — exactly one match, cased to match the prefix.
+/// - `Ambiguous`    — multiple matches, user is still typing.
+/// - `Empty`        — nothing typed yet.
+/// - `NoMatch`      — zero matches, prefix is wrong.
+/// - `MixedCase`    — prefix has inconsistent casing.
+pub fn complete_word(prefix: &str) -> Completion {
+    if prefix.is_empty() {
+        return Completion::Empty;
+    }
+
+    let has_upper = prefix.chars().any(|c| c.is_ascii_uppercase());
+    let has_lower = prefix.chars().any(|c| c.is_ascii_lowercase());
+
+    if has_upper && has_lower {
+        return Completion::MixedCase;
+    }
+
+    let lower = prefix.to_ascii_lowercase();
+    let candidates = tab_complete(&lower);
+
+    match candidates.len() {
+        0 => Completion::NoMatch,
+        1 => {
+            let word = candidates[0];
+            Completion::Unique(if has_upper {
+                word.to_ascii_uppercase()
+            } else {
+                word.to_string()
+            })
+        }
+        _ => Completion::Ambiguous,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Fuzzy matching
 // ---------------------------------------------------------------------------
@@ -533,6 +599,53 @@ mod tests {
         let matches = tab_complete("ab");
         assert!(matches.len() >= 2); // abandon, ability, absorb, abstract, absurd
         assert!(matches.contains(&"abandon"));
+    }
+
+    #[test]
+    fn complete_word_unique_lowercase() {
+        // "aba" should uniquely match "abandon" → lowercase
+        assert_eq!(
+            complete_word("aba"),
+            Completion::Unique("abandon".to_string())
+        );
+    }
+
+    #[test]
+    fn complete_word_unique_uppercase() {
+        assert_eq!(
+            complete_word("ABA"),
+            Completion::Unique("ABANDON".to_string())
+        );
+    }
+
+    #[test]
+    fn complete_word_ambiguous() {
+        // "ab" matches multiple words (abandon, ability, …)
+        assert_eq!(complete_word("ab"), Completion::Ambiguous);
+    }
+
+    #[test]
+    fn complete_word_empty() {
+        assert_eq!(complete_word(""), Completion::Empty);
+    }
+
+    #[test]
+    fn complete_word_no_match() {
+        assert_eq!(complete_word("xqz"), Completion::NoMatch);
+    }
+
+    #[test]
+    fn complete_word_mixed_case() {
+        assert_eq!(complete_word("aBa"), Completion::MixedCase);
+    }
+
+    #[test]
+    fn complete_word_full_word() {
+        // Typing the full word should still return Unique.
+        assert_eq!(
+            complete_word("abandon"),
+            Completion::Unique("abandon".to_string())
+        );
     }
 
     #[test]

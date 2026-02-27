@@ -11,6 +11,7 @@
 //! The collector runs until enough shares are gathered or the user quits.
 
 use std::collections::HashSet;
+use std::io::Write;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -238,6 +239,8 @@ pub fn collect_shares(
 
     // Channel for shares discovered by the camera scanner thread.
     let (cam_tx, cam_rx) = mpsc::channel::<Share>();
+    // Channel for camera log messages (avoids interleaving with terminal input).
+    let (cam_log_tx, cam_log_rx) = mpsc::channel::<String>();
 
     // ----- Phase 1: Load from folder -----
     if let Some(dir) = shares_dir {
@@ -274,8 +277,9 @@ pub fn collect_shares(
         let cam_tx2 = cam_tx.clone();
         Some(std::thread::spawn(move || {
             // Camera errors are non-fatal — user can fall back to mnemonic.
-            if let Err(e) = run_camera_window(cam_state, cam_tx2) {
-                eprintln!("  camera: {e}");
+            let log_err = cam_log_tx.clone();
+            if let Err(e) = run_camera_window(cam_state, cam_tx2, cam_log_tx) {
+                let _ = log_err.send(format!("camera: {e}"));
             }
         }))
     };
@@ -284,7 +288,7 @@ pub fn collect_shares(
     drop(cam_tx);
 
     // ----- Phase 3: Terminal mnemonic input loop -----
-    run_terminal_loop(&state, &cam_rx)?;
+    run_terminal_loop(&state, &cam_rx, &cam_log_rx)?;
 
     // ----- Cleanup -----
     // If camera thread is still running, it will exit when it sees complete=true.
@@ -310,171 +314,418 @@ pub fn collect_shares(
 }
 
 // ---------------------------------------------------------------------------
-// Terminal mnemonic input loop
+// Terminal mnemonic input loop (raw mode with shadow completion)
 // ---------------------------------------------------------------------------
 
 fn run_terminal_loop(
     state: &Arc<Mutex<CollectorState>>,
     cam_rx: &mpsc::Receiver<Share>,
+    cam_log_rx: &mpsc::Receiver<String>,
 ) -> Result<()> {
-    use std::io::{self, BufRead, Write};
+    use std::io::Write;
+    let mut out = std::io::stderr();
 
     print_status(&state.lock().unwrap());
     eprintln!();
-    eprintln!("Enter mnemonic words (28 space-separated tokens per share),");
-    eprintln!("or type 'done'/'quit' to stop. Words can span multiple lines.");
-    eprintln!("Tab-complete: type first few chars. Case matters (UPPER=1, lower=0).");
+    eprintln!("Enter mnemonic words one at a time ({MNEMONIC_WORDS} words per share).");
+    eprintln!("Tab/Enter accepts the shadowed completion.  Ctrl-C to quit.");
+    eprintln!("Case matters: lowercase = 0, UPPERCASE = 1.");
     eprintln!();
 
-    let stdin = io::stdin();
-    let mut reader = stdin.lock();
-    let mut accumulated_words: Vec<String> = Vec::new();
+    crossterm::terminal::enable_raw_mode()?;
+    let result = run_raw_loop(state, cam_rx, cam_log_rx, &mut out);
+    crossterm::terminal::disable_raw_mode()?;
+
+    // Ensure cursor is on a fresh line after raw mode.
+    write!(out, "\r\n")?;
+    out.flush()?;
+
+    result
+}
+
+/// Inner raw-mode loop.  Collects words one at a time, decodes each
+/// MNEMONIC_WORDS-word group, and feeds decoded shares into the collector.
+fn run_raw_loop(
+    state: &Arc<Mutex<CollectorState>>,
+    cam_rx: &mpsc::Receiver<Share>,
+    cam_log_rx: &mpsc::Receiver<String>,
+    out: &mut impl Write,
+) -> Result<()> {
+    let mut words: Vec<String> = Vec::new();
 
     loop {
-        // Check for shares arriving from the camera thread.
-        while let Ok(share) = cam_rx.try_recv() {
-            let mut st = state.lock().unwrap();
-            let result = st.try_add(share);
-            eprintln!("  camera: {result}");
-            print_status(&st);
-            if st.complete {
-                eprintln!("\n  ✓ Enough shares collected!");
-                return Ok(());
-            }
-        }
+        // Drain camera log messages and shares.
+        drain_camera(state, cam_rx, cam_log_rx, out)?;
 
-        // Check if we're already done.
-        {
-            let st = state.lock().unwrap();
-            if st.complete {
-                eprintln!("\n  ✓ Enough shares collected!");
-                return Ok(());
-            }
-        }
-
-        // Prompt.
-        let word_count = accumulated_words.len();
-        if word_count > 0 {
-            eprint!("[{}/{}] > ", word_count, MNEMONIC_WORDS);
-        } else {
-            eprint!("mnemonic > ");
-        }
-        io::stderr().flush().ok();
-
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).context("read stdin")?;
-        if n == 0 {
-            // EOF
-            eprintln!("\n  stdin closed");
+        // Check completion.
+        if state.lock().unwrap().complete {
+            write!(out, "\r\n  \x1b[32m✓ Enough shares collected!\x1b[0m\r\n")?;
+            out.flush()?;
             return Ok(());
         }
 
-        let line = line.trim();
-        if line.eq_ignore_ascii_case("done") || line.eq_ignore_ascii_case("quit") {
-            eprintln!("  stopped by user");
-            return Ok(());
-        }
-        if line.eq_ignore_ascii_case("status") {
-            print_status(&state.lock().unwrap());
-            continue;
-        }
-        if line.is_empty() {
-            continue;
-        }
+        let word_num = words.len() + 1;
 
-        // Collect words from this line.
-        for token in line.split_whitespace() {
-            // Tab-complete: if token ends with '?', show completions.
-            if token.ends_with('?') {
-                let prefix = &token[..token.len() - 1];
-                let completions = mnemonic::tab_complete(prefix);
-                if completions.is_empty() {
-                    eprintln!("  no completions for '{prefix}'");
-                } else {
-                    eprintln!("  completions: {}", completions.join(", "));
-                }
-                continue;
-            }
+        match read_word(word_num, out, cam_rx, cam_log_rx, state)? {
+            WordAction::Word(w) => {
+                words.push(w);
 
-            // Validate word on the fly.
-            match mnemonic::validate_word(token) {
-                mnemonic::WordValidation::Valid(_) => {
-                    accumulated_words.push(token.to_string());
-                }
-                mnemonic::WordValidation::NearMiss { input, suggestions } => {
-                    eprintln!(
-                        "  warning: '{}' not exact — did you mean: {}?",
-                        input,
-                        suggestions
-                            .iter()
-                            .map(|s| format!("'{}' (d={})", s.word, s.distance))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                    // Accept it anyway, decode() will fuzzy-correct.
-                    accumulated_words.push(token.to_string());
-                }
-                mnemonic::WordValidation::Unknown(w) => {
-                    eprintln!("  error: '{w}' is not in the wordlist and no close match found");
-                    eprintln!("  skipping this word — try again");
-                    continue;
-                }
-            }
-        }
-
-        // If we've accumulated 28 words, try to decode.
-        if accumulated_words.len() >= MNEMONIC_WORDS {
-            let words: Vec<&str> = accumulated_words[..MNEMONIC_WORDS]
-                .iter()
-                .map(|s| s.as_str())
-                .collect();
-
-            match try_decode_mnemonic(&words) {
-                Ok(payload) => {
-                    let mut st = state.lock().unwrap();
-                    let result = st.try_add_mnemonic(payload);
-                    eprintln!("  mnemonic: {result}");
-                    print_status(&st);
-                    // Keep any words beyond MNEMONIC_WORDS for the next share.
-                    accumulated_words = accumulated_words.split_off(MNEMONIC_WORDS);
-                    if st.complete {
-                        eprintln!("\n  ✓ Enough shares collected!");
-                        return Ok(());
+                if words.len() >= MNEMONIC_WORDS {
+                    // Attempt decode.
+                    let refs: Vec<&str> = words.iter().map(|s| s.as_str()).collect();
+                    match mnemonic::decode(&refs) {
+                        Ok((payload, corrections)) => {
+                            for corr in &corrections {
+                                write!(
+                                    out,
+                                    "  auto-corrected #{}: '{}' → '{}'{}\r\n",
+                                    corr.position,
+                                    corr.input,
+                                    corr.corrected,
+                                    if corr.alternatives.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(" (also: {})", corr.alternatives.join(", "))
+                                    }
+                                )?;
+                            }
+                            let mut st = state.lock().unwrap();
+                            let result = st.try_add_mnemonic(payload);
+                            write!(out, "  mnemonic: {result}\r\n")?;
+                            write_status(&st, out)?;
+                            words.clear();
+                            if st.complete {
+                                write!(
+                                    out,
+                                    "\r\n  \x1b[32m✓ Enough shares collected!\x1b[0m\r\n"
+                                )?;
+                                out.flush()?;
+                                return Ok(());
+                            }
+                        }
+                        Err(e) => {
+                            write!(
+                                out,
+                                "\r\n  \x1b[31m✗ decode error: {e}\x1b[0m\r\n"
+                            )?;
+                            write!(out, "  clearing — please re-enter this share\r\n\r\n")?;
+                            words.clear();
+                        }
                     }
                 }
-                Err(e) => {
-                    eprintln!("  mnemonic decode error: {e}");
-                    eprintln!("  clearing words — please re-enter this share");
-                    accumulated_words.clear();
-                }
+            }
+            WordAction::Complete => {
+                write!(out, "\r\n  \x1b[32m✓ Enough shares collected!\x1b[0m\r\n")?;
+                out.flush()?;
+                return Ok(());
+            }
+            WordAction::Quit => {
+                write!(out, "\r\n  stopped by user\r\n")?;
+                out.flush()?;
+                return Ok(());
             }
         }
     }
 }
 
-/// Decode a 28-word mnemonic into a `MnemonicPayload`.
-///
-/// The mnemonic only encodes x + y + pubkey_prefix (37 bytes).
-/// The caller is responsible for matching the prefix against the known
-/// pubkey and filling in threshold/group/signature from context.
-fn try_decode_mnemonic(words: &[&str]) -> Result<MnemonicPayload> {
-    let (payload, corrections) = mnemonic::decode(words)?;
+// -- word-level raw input ---------------------------------------------------
 
-    for corr in &corrections {
-        eprintln!(
-            "  auto-corrected word #{}: '{}' → '{}'{}",
-            corr.position,
-            corr.input,
-            corr.corrected,
-            if corr.alternatives.is_empty() {
-                String::new()
-            } else {
-                format!(" (also: {})", corr.alternatives.join(", "))
+enum WordAction {
+    Word(String),
+    /// All required shares have been collected (e.g. by the camera thread).
+    Complete,
+    /// User explicitly quit (Ctrl-C, "quit", etc.).
+    Quit,
+}
+
+/// Read a single mnemonic word with shadow completion, case enforcement,
+/// and inline validation.
+fn read_word(
+    word_num: usize,
+    out: &mut impl Write,
+    cam_rx: &mpsc::Receiver<Share>,
+    cam_log_rx: &mpsc::Receiver<String>,
+    state: &Arc<Mutex<CollectorState>>,
+) -> Result<WordAction> {
+    use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+    use std::time::Duration;
+
+    let mut typed = String::new();
+
+    loop {
+        // Compute completion state (case-aware).
+        let comp = mnemonic::complete_word(&typed);
+
+        render_prompt(word_num, &typed, &comp, out)?;
+
+        // Poll with short timeout so we can service camera events.
+        if !event::poll(Duration::from_millis(100))? {
+            drain_camera(state, cam_rx, cam_log_rx, out)?;
+            if state.lock().unwrap().complete {
+                return Ok(WordAction::Complete);
             }
-        );
+            continue;
+        }
+
+        let ev = event::read()?;
+        let Event::Key(key) = ev else { continue };
+        // Ignore key-release events (crossterm 0.28 sends press + release).
+        if key.kind != crossterm::event::KeyEventKind::Press {
+            continue;
+        }
+
+        match key.code {
+            // ── quit ───────────────────────────────────────────────────
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return Ok(WordAction::Quit);
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return Ok(WordAction::Quit);
+            }
+
+            // ── typing ────────────────────────────────────────────────
+            KeyCode::Char(c) => {
+                if c == ' ' {
+                    // Space = accept current word (same as Enter).
+                    if let Some(w) = try_accept(&typed, &comp) {
+                        show_accepted(word_num, &w, out)?;
+                        return Ok(WordAction::Word(w));
+                    }
+                    if typed.is_empty() {
+                        continue;
+                    }
+                    show_reject(&typed, &comp, out)?;
+                    typed.clear();
+                } else {
+                    typed.push(c);
+                }
+            }
+
+            // ── tab: fill shadow ──────────────────────────────────────
+            KeyCode::Tab => {
+                if let Some(w) = comp.word() {
+                    typed = w.to_string();
+                }
+            }
+
+            // ── enter: accept word ────────────────────────────────────
+            KeyCode::Enter => {
+                if typed.is_empty() {
+                    continue;
+                }
+                // Check for quit command.
+                if typed.eq_ignore_ascii_case("quit") || typed.eq_ignore_ascii_case("done") {
+                    return Ok(WordAction::Quit);
+                }
+                if let Some(w) = try_accept(&typed, &comp) {
+                    show_accepted(word_num, &w, out)?;
+                    return Ok(WordAction::Word(w));
+                }
+                show_reject(&typed, &comp, out)?;
+                typed.clear();
+            }
+
+            // ── editing ───────────────────────────────────────────────
+            KeyCode::Backspace => {
+                typed.pop();
+            }
+            KeyCode::Esc => {
+                typed.clear();
+            }
+            _ => {}
+        }
+    }
+}
+
+// -- rendering helpers ------------------------------------------------------
+
+/// Redraw the prompt line with shadow completion or inline error indicator.
+fn render_prompt(
+    word_num: usize,
+    typed: &str,
+    comp: &mnemonic::Completion,
+    out: &mut impl Write,
+) -> std::io::Result<()> {
+    use mnemonic::Completion;
+    // \r         → carriage return
+    // \x1b[2K    → erase entire line
+    write!(out, "\r\x1b[2K[{}/{}] > ", word_num, MNEMONIC_WORDS)?;
+
+    match comp {
+        Completion::Unique(word) => {
+            write!(out, "{}", typed)?;
+            if word.len() > typed.len() {
+                let suffix = &word[typed.len()..];
+                // Dark-grey shadow, then move cursor back.
+                write!(out, "\x1b[90m{}\x1b[0m\x1b[{}D", suffix, suffix.len())?;
+            }
+        }
+        Completion::NoMatch => {
+            // Red typed text + warning glyph.
+            write!(out, "\x1b[31m{}\x1b[0m \x1b[31m✗\x1b[0m", typed)?;
+            // Move cursor back before the indicator.
+            write!(out, "\x1b[3D")?;
+        }
+        Completion::MixedCase => {
+            // Yellow typed text + case warning.
+            write!(out, "\x1b[33m{}\x1b[0m \x1b[33m⚠\x1b[0m", typed)?;
+            write!(out, "\x1b[3D")?;
+        }
+        _ => {
+            // Empty or Ambiguous — just show typed text, no decoration.
+            write!(out, "{}", typed)?;
+        }
+    }
+    out.flush()
+}
+
+/// Replace the current prompt line with a green-check accepted word.
+fn show_accepted(
+    word_num: usize,
+    word: &str,
+    out: &mut impl Write,
+) -> std::io::Result<()> {
+    write!(
+        out,
+        "\r\x1b[2K[{}/{}] \x1b[32m✓\x1b[0m {}\r\n",
+        word_num, MNEMONIC_WORDS, word
+    )?;
+    out.flush()
+}
+
+/// Show an inline rejection message and leave cursor on a fresh line.
+fn show_reject(
+    typed: &str,
+    comp: &mnemonic::Completion,
+    out: &mut impl Write,
+) -> std::io::Result<()> {
+    use mnemonic::Completion;
+
+    match comp {
+        Completion::MixedCase => {
+            write!(
+                out,
+                "\r\n  \x1b[33m⚠ mixed case — use '{}' or '{}'\x1b[0m\r\n",
+                typed.to_ascii_lowercase(),
+                typed.to_ascii_uppercase(),
+            )?;
+        }
+        Completion::NoMatch => {
+            // Try fuzzy suggestions for a friendlier error.
+            let suggestions = mnemonic::fuzzy_suggestions(typed);
+            let has_upper = typed.chars().any(|c| c.is_ascii_uppercase());
+            if suggestions.is_empty() {
+                write!(
+                    out,
+                    "\r\n  \x1b[31m✗ '{}' not in wordlist and no close match\x1b[0m\r\n",
+                    typed,
+                )?;
+            } else {
+                let list: Vec<String> = suggestions
+                    .iter()
+                    .map(|s| {
+                        let w = if has_upper {
+                            s.word.to_ascii_uppercase()
+                        } else {
+                            s.word.to_string()
+                        };
+                        format!("'{w}'")
+                    })
+                    .collect();
+                write!(
+                    out,
+                    "\r\n  \x1b[33m⚠ '{}' not in wordlist — did you mean: {}?\x1b[0m\r\n",
+                    typed,
+                    list.join(", "),
+                )?;
+            }
+        }
+        _ => {
+            // Ambiguous / Valid fall-through (shouldn't normally reach here).
+            match mnemonic::validate_word(typed) {
+                mnemonic::WordValidation::Valid(_) => unreachable!(),
+                mnemonic::WordValidation::NearMiss { input, suggestions } => {
+                    let has_upper = typed.chars().any(|c| c.is_ascii_uppercase());
+                    let list: Vec<String> = suggestions
+                        .iter()
+                        .map(|s| {
+                            let w = if has_upper {
+                                s.word.to_ascii_uppercase()
+                            } else {
+                                s.word.to_string()
+                            };
+                            format!("'{w}'")
+                        })
+                        .collect();
+                    write!(
+                        out,
+                        "\r\n  \x1b[33m⚠ '{input}' not in wordlist — did you mean: {}?\x1b[0m\r\n",
+                        list.join(", "),
+                    )?;
+                }
+                mnemonic::WordValidation::Unknown(w) => {
+                    write!(
+                        out,
+                        "\r\n  \x1b[31m✗ '{w}' not in wordlist and no close match\x1b[0m\r\n",
+                    )?;
+                }
+            }
+        }
+    }
+    out.flush()
+}
+
+/// Accept a typed word if it is valid and case-consistent.
+///
+/// Prefers the shadow completion (unique prefix match).  Falls back to an
+/// exact wordlist lookup of the typed text.  Returns `None` when the input
+/// is erroneous or still ambiguous.
+fn try_accept(typed: &str, comp: &mnemonic::Completion) -> Option<String> {
+    if typed.is_empty() {
+        return None;
     }
 
-    Ok(payload)
+    // Error states → reject.
+    if comp.is_error() {
+        return None;
+    }
+
+    // If unique shadow exists, accept it.
+    if let Some(w) = comp.word() {
+        return Some(w.to_string());
+    }
+
+    // Full word typed — check wordlist (case-consistent since comp isn't MixedCase).
+    if matches!(mnemonic::validate_word(typed), mnemonic::WordValidation::Valid(_)) {
+        Some(typed.to_string())
+    } else {
+        None
+    }
+}
+
+// -- camera / status helpers ------------------------------------------------
+
+/// Drain camera log messages and newly scanned shares without corrupting
+/// the raw-mode terminal.
+fn drain_camera(
+    state: &Arc<Mutex<CollectorState>>,
+    cam_rx: &mpsc::Receiver<Share>,
+    cam_log_rx: &mpsc::Receiver<String>,
+    out: &mut impl Write,
+) -> Result<()> {
+    // Camera log messages.
+    while let Ok(msg) = cam_log_rx.try_recv() {
+        write!(out, "\r\x1b[2K  {msg}\r\n")?;
+    }
+    // Camera-scanned shares.
+    while let Ok(share) = cam_rx.try_recv() {
+        let mut st = state.lock().unwrap();
+        let result = st.try_add(share);
+        write!(out, "\r\x1b[2K  camera: {result}\r\n")?;
+        write_status(&st, out)?;
+    }
+    out.flush()?;
+    Ok(())
 }
 
 fn print_status(st: &CollectorState) {
@@ -491,6 +742,22 @@ fn print_status(st: &CollectorState) {
     );
 }
 
+fn write_status(st: &CollectorState, out: &mut impl Write) -> std::io::Result<()> {
+    let total = st.shares.len();
+    let threshold = st.threshold.map(|t| t.to_string()).unwrap_or("?".into());
+    let remaining = match st.threshold {
+        Some(_) => st.remaining().to_string(),
+        None => "?".to_string(),
+    };
+    let xs: Vec<String> = st.shares.iter().map(|s| format!("#{}", s.x)).collect();
+    write!(
+        out,
+        "  status: {total}/{threshold} share(s) collected [{}], {remaining} more needed\r\n",
+        xs.join(", ")
+    )?;
+    out.flush()
+}
+
 // ---------------------------------------------------------------------------
 // Camera scanner window (eframe + nokhwa + rqrr)
 // ---------------------------------------------------------------------------
@@ -498,6 +765,7 @@ fn print_status(st: &CollectorState) {
 fn run_camera_window(
     state: Arc<Mutex<CollectorState>>,
     tx: mpsc::Sender<Share>,
+    log_tx: mpsc::Sender<String>,
 ) -> Result<()> {
     use eframe::egui;
 
@@ -509,9 +777,9 @@ fn run_camera_window(
         anyhow::bail!("no cameras found");
     }
 
-    eprintln!("  camera: found {} device(s):", devices.len());
+    let _ = log_tx.send(format!("camera: found {} device(s):", devices.len()));
     for (i, dev) in devices.iter().enumerate() {
-        eprintln!("    [{}] {}", i, dev.human_name());
+        let _ = log_tx.send(format!("  [{}] {}", i, dev.human_name()));
     }
 
     let app = ScannerApp {
@@ -790,8 +1058,10 @@ impl eframe::App for ScannerApp {
             }
         });
 
-        // Request repaint to keep camera feed live.
-        if !complete {
+        // Auto-close when collection is complete; otherwise keep repainting.
+        if complete {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else {
             ctx.request_repaint();
         }
     }
