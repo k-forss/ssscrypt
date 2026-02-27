@@ -147,6 +147,12 @@ pub fn decrypt(file: &EncryptedFile, keys: &DerivedKeys) -> Result<Vec<u8>> {
 // ---------------------------------------------------------------------------
 
 /// Sign a raw SSS share, producing a full `Share` with pubkey and signature.
+///
+/// # Errors
+///
+/// Returns an error if the group name exceeds 255 bytes (via
+/// [`Share::signed_bytes`]), since the binary share format cannot encode a
+/// longer group name.
 pub fn sign_share(raw: &RawShare, keys: &DerivedKeys, threshold: u8, group: &str) -> Result<Share> {
     let mut share = Share {
         version: SHARE_VERSION,

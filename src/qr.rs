@@ -163,6 +163,11 @@ fn draw_rect(img: &mut GrayImage, x: u32, y: u32, w: u32, h: u32, thick: u32) {
 /// Build the QR payload: the full binary-serialized share.
 ///
 /// The share embeds its group name, so no separate label is needed.
+///
+/// # Errors
+///
+/// Returns an error if serializing the share via [`Share::to_bytes`] fails,
+/// for example if the share contains an oversized group name.
 pub fn qr_payload(share: &Share) -> Result<Vec<u8>> {
     share.to_bytes()
 }

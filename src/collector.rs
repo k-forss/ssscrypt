@@ -251,7 +251,10 @@ pub fn collect_shares(
         eprintln!(
             "  loaded from folder: {} share(s), {} more needed",
             st.shares.len(),
-            st.remaining()
+            match st.threshold {
+                Some(_) => st.remaining().to_string(),
+                None => "?".to_string(),
+            }
         );
         if st.complete {
             eprintln!("  enough shares — skipping interactive mode");
@@ -477,7 +480,10 @@ fn try_decode_mnemonic(words: &[&str]) -> Result<MnemonicPayload> {
 fn print_status(st: &CollectorState) {
     let total = st.shares.len();
     let threshold = st.threshold.map(|t| t.to_string()).unwrap_or("?".into());
-    let remaining = st.remaining();
+    let remaining = match st.threshold {
+        Some(_) => st.remaining().to_string(),
+        None => "?".to_string(),
+    };
     let xs: Vec<String> = st.shares.iter().map(|s| format!("#{}", s.x)).collect();
     eprintln!(
         "  status: {total}/{threshold} share(s) collected [{}], {remaining} more needed",

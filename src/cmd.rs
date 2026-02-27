@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
@@ -273,11 +273,11 @@ fn encrypt(args: EncryptArgs) -> Result<()> {
     };
 
     // Read plaintext.
-    let mut plaintext = io::read_input(&args.io)?;
+    let plaintext = Zeroizing::new(io::read_input(&args.io)?);
     eprintln!("encrypt: read {} bytes of plaintext", plaintext.len());
 
     // Obtain master key.
-    let (mut master, existing_threshold) = if has_existing {
+    let (master, existing_threshold) = if has_existing {
         // Resolve anchor for unanchored operation.
         let anchor = resolve_anchor(&args.pin)?;
         let collected = gather_shares(
@@ -287,10 +287,10 @@ fn encrypt(args: EncryptArgs) -> Result<()> {
         )?;
         eprintln!("encrypt: reconstructing key from {} share(s)", collected.shares.len());
         let raw = crypto::shares_to_raw(&collected.shares);
-        let master = sss::combine(&raw, collected.threshold)?;
+        let master = Zeroizing::new(sss::combine(&raw, collected.threshold)?);
         (master, Some((collected.threshold, collected.pubkey)))
     } else {
-        let key = crypto::generate_master_key();
+        let key = Zeroizing::new(crypto::generate_master_key());
         eprintln!("encrypt: generated new random master key");
         (key, None)
     };
@@ -336,10 +336,7 @@ fn encrypt(args: EncryptArgs) -> Result<()> {
         );
     }
 
-    // Zeroize.
-    plaintext.zeroize();
-    master.zeroize();
-    drop(keys);
+    // plaintext, master, and keys are all zeroized on drop.
     Ok(())
 }
 
@@ -363,20 +360,17 @@ fn decrypt(args: DecryptArgs) -> Result<()> {
 
     // Reconstruct master key.
     let raw = crypto::shares_to_raw(&collected.shares);
-    let mut master = sss::combine(&raw, collected.threshold)?;
+    let master = Zeroizing::new(sss::combine(&raw, collected.threshold)?);
     let keys = crypto::derive_keys(&master);
 
     // Decrypt.
-    let mut plaintext = crypto::decrypt(&encrypted, &keys)?;
+    let plaintext = Zeroizing::new(crypto::decrypt(&encrypted, &keys)?);
     eprintln!("decrypt: decrypted {} bytes of plaintext", plaintext.len());
 
     // Write plaintext.
     io::write_output(&args.io, &plaintext)?;
 
-    // Zeroize.
-    plaintext.zeroize();
-    master.zeroize();
-    drop(keys);
+    // plaintext, master, and keys are all zeroized on drop.
     Ok(())
 }
 
@@ -400,22 +394,22 @@ fn rotate(args: RotateArgs) -> Result<()> {
     )?;
 
     let raw = crypto::shares_to_raw(&collected.shares);
-    let mut old_master = sss::combine(&raw, collected.threshold)?;
+    let old_master = Zeroizing::new(sss::combine(&raw, collected.threshold)?);
     let old_keys = crypto::derive_keys(&old_master);
-    let mut plaintext = crypto::decrypt(&encrypted, &old_keys)?;
+    let plaintext = Zeroizing::new(crypto::decrypt(&encrypted, &old_keys)?);
     eprintln!("rotate: decrypted {} bytes", plaintext.len());
 
-    // Zeroize old key material.
-    old_master.zeroize();
+    // Zeroize old key material as soon as it's no longer needed.
+    drop(old_master);
     drop(old_keys);
 
     // Generate new key, encrypt, split.
-    let mut new_master = crypto::generate_master_key();
+    let new_master = Zeroizing::new(crypto::generate_master_key());
     let new_keys = crypto::derive_keys(&new_master);
     let new_encrypted = crypto::encrypt(&plaintext, &new_keys, args.new_shares.threshold, &args.group)?;
 
-    // Zeroize plaintext now that it has been re-encrypted.
-    plaintext.zeroize();
+    // plaintext is no longer needed once encrypted; drop it eagerly.
+    drop(plaintext);
 
     // Write re-encrypted output (text format).
     io::write_output(&args.io, new_encrypted.to_text().as_bytes())?;
@@ -435,9 +429,7 @@ fn rotate(args: RotateArgs) -> Result<()> {
         args.new_shares.new_shares_dir
     );
 
-    // Zeroize.
-    new_master.zeroize();
-    drop(new_keys);
+    // new_master and new_keys are zeroized on drop.
     Ok(())
 }
 

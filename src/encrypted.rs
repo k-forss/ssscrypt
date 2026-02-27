@@ -71,7 +71,13 @@ pub struct Header {
 }
 
 impl Header {
-    /// Serialize header to binary (variable-length).
+    /// Serialize the header to its binary representation (variable-length).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the UTF-8 group name is longer than [`MAX_GROUP_LEN`]
+    /// bytes, since the on-disk format reserves only a single byte for the
+    /// group length.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         let group_bytes = self.group.as_bytes();
         let group_len = group_bytes.len();

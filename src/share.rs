@@ -72,6 +72,12 @@ pub struct Share {
 
 impl Share {
     /// Serialize to the variable-length binary format (for QR codes).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the group name exceeds [`MAX_GROUP_LEN`] bytes,
+    /// since the on-disk format reserves only a single byte for the group
+    /// length field.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         let group_bytes = self.group.as_bytes();
         let group_len = group_bytes.len();
