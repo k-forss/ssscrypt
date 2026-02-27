@@ -11,9 +11,7 @@ pub fn read_input(io_args: &IoArgs) -> Result<Vec<u8>> {
         Some(path) => fs::read(path).with_context(|| format!("read {:?}", path)),
         None => {
             let mut buf = Vec::new();
-            io::stdin()
-                .read_to_end(&mut buf)
-                .context("read stdin")?;
+            io::stdin().read_to_end(&mut buf).context("read stdin")?;
             Ok(buf)
         }
     }
@@ -25,9 +23,7 @@ pub fn write_output(io_args: &IoArgs, data: &[u8]) -> Result<()> {
         Some(path) => fs::write(path, data).with_context(|| format!("write {:?}", path)),
         None => {
             use std::io::Write;
-            io::stdout()
-                .write_all(data)
-                .context("write stdout")?;
+            io::stdout().write_all(data).context("write stdout")?;
             io::stdout().flush().context("flush stdout")
         }
     }
@@ -84,8 +80,7 @@ pub fn write_shares(dir: &Path, shares: &[Share]) -> Result<()> {
     use crate::mnemonic::{self, MnemonicPayload};
     use crate::qr;
 
-    fs::create_dir_all(dir)
-        .with_context(|| format!("create shares directory {:?}", dir))?;
+    fs::create_dir_all(dir).with_context(|| format!("create shares directory {:?}", dir))?;
     for share in shares {
         // Write text share file.
         let path = dir.join(share.filename());

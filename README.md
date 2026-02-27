@@ -341,3 +341,12 @@ Write down the pubkey hex on paper during the initial ceremony and verify it dur
 - **Mnemonic word input**: 30 words per share, entered one at a time in raw-mode terminal with shadow autocomplete, case enforcement, and fuzzy correction
 
 All methods feed into the same interactive collector, which deduplicates shares and returns once the threshold is met.
+
+## License
+
+Licensed under either of
+
+- [Apache License, Version 2.0](LICENSE-APACHE)
+- [MIT License](LICENSE-MIT)
+
+at your option.
