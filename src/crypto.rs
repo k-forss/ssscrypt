@@ -92,7 +92,7 @@ pub fn encrypt(
     };
 
     // Sign header‖ciphertext.
-    let header_bytes = header.to_bytes();
+    let header_bytes = header.to_bytes()?;
     let mut msg = Vec::with_capacity(header_bytes.len() + ciphertext.len());
     msg.extend_from_slice(&header_bytes);
     msg.extend_from_slice(&ciphertext);
@@ -125,7 +125,7 @@ pub fn decrypt(file: &EncryptedFile, keys: &DerivedKeys) -> Result<Vec<u8>> {
 
     // Verify file signature.
     let verifying = keys.signing.verifying_key();
-    let signed = file.signed_bytes();
+    let signed = file.signed_bytes()?;
     let sig = ed25519_dalek::Signature::from_bytes(&file.signature);
     verifying
         .verify(&signed, &sig)
@@ -147,7 +147,13 @@ pub fn decrypt(file: &EncryptedFile, keys: &DerivedKeys) -> Result<Vec<u8>> {
 // ---------------------------------------------------------------------------
 
 /// Sign a raw SSS share, producing a full `Share` with pubkey and signature.
-pub fn sign_share(raw: &RawShare, keys: &DerivedKeys, threshold: u8, group: &str) -> Share {
+///
+/// # Errors
+///
+/// Returns an error if the group name exceeds 255 bytes (via
+/// [`Share::signed_bytes`]), since the binary share format cannot encode a
+/// longer group name.
+pub fn sign_share(raw: &RawShare, keys: &DerivedKeys, threshold: u8, group: &str) -> Result<Share> {
     let mut share = Share {
         version: SHARE_VERSION,
         threshold,
@@ -158,17 +164,17 @@ pub fn sign_share(raw: &RawShare, keys: &DerivedKeys, threshold: u8, group: &str
         signature: [0u8; 64],
     };
 
-    let msg = share.signed_bytes();
+    let msg = share.signed_bytes()?;
     let sig = keys.signing.sign(&msg);
     share.signature = sig.to_bytes();
-    share
+    Ok(share)
 }
 
 /// Verify a share's Ed25519 signature against its embedded pubkey.
 pub fn verify_share_signature(share: &Share) -> Result<()> {
     let pubkey = VerifyingKey::from_bytes(&share.pubkey)
         .context("share: invalid pubkey")?;
-    let msg = share.signed_bytes();
+    let msg = share.signed_bytes()?;
     let sig = ed25519_dalek::Signature::from_bytes(&share.signature);
     pubkey
         .verify(&msg, &sig)
@@ -362,7 +368,7 @@ mod tests {
         let raw_shares = sss::split(&master, 3, 5).unwrap();
 
         for raw in &raw_shares {
-            let signed = sign_share(raw, &keys, 3, "");
+            let signed = sign_share(raw, &keys, 3, "").unwrap();
             assert!(verify_share_signature(&signed).is_ok());
         }
     }
@@ -372,7 +378,7 @@ mod tests {
         let master = generate_master_key();
         let keys = derive_keys(&master);
         let raw_shares = sss::split(&master, 2, 3).unwrap();
-        let mut signed = sign_share(&raw_shares[0], &keys, 2, "");
+        let mut signed = sign_share(&raw_shares[0], &keys, 2, "").unwrap();
         signed.y[0] ^= 0xff; // corrupt
         assert!(verify_share_signature(&signed).is_err());
     }
@@ -390,7 +396,7 @@ mod tests {
         let raw_shares = sss::split(&master, 3, 5).unwrap();
         let signed_shares: Vec<Share> = raw_shares
             .iter()
-            .map(|r| sign_share(r, &keys, 3, ""))
+            .map(|r| sign_share(r, &keys, 3, "").unwrap())
             .collect();
 
         // Reconstruct from a subset.
@@ -420,7 +426,7 @@ mod tests {
         let raw = sss::split(&master1, 2, 3).unwrap();
 
         // Sign with keys2 (wrong keys).
-        let shares: Vec<Share> = raw.iter().map(|r| sign_share(r, &keys2, 2, "")).collect();
+        let shares: Vec<Share> = raw.iter().map(|r| sign_share(r, &keys2, 2, "").unwrap()).collect();
         let anchor = pubkey_bytes(&keys1.signing);
         assert!(ingest_shares(shares, Some(&anchor)).is_err());
     }

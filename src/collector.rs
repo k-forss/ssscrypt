@@ -51,8 +51,10 @@ impl CollectorState {
 
     /// How many more shares are needed (0 = ready).
     pub fn remaining(&self) -> usize {
-        let k = self.threshold.unwrap_or(2) as usize;
-        k.saturating_sub(self.shares.len())
+        match self.threshold {
+            Some(k) => (k as usize).saturating_sub(self.shares.len()),
+            None => usize::MAX,
+        }
     }
 
     /// Try to add a share. Returns true if accepted (new, valid).
@@ -249,7 +251,10 @@ pub fn collect_shares(
         eprintln!(
             "  loaded from folder: {} share(s), {} more needed",
             st.shares.len(),
-            st.remaining()
+            match st.threshold {
+                Some(_) => st.remaining().to_string(),
+                None => "?".to_string(),
+            }
         );
         if st.complete {
             eprintln!("  enough shares — skipping interactive mode");
@@ -430,7 +435,8 @@ fn run_terminal_loop(
                     let result = st.try_add_mnemonic(payload);
                     eprintln!("  mnemonic: {result}");
                     print_status(&st);
-                    accumulated_words.clear();
+                    // Keep any words beyond MNEMONIC_WORDS for the next share.
+                    accumulated_words = accumulated_words.split_off(MNEMONIC_WORDS);
                     if st.complete {
                         eprintln!("\n  ✓ Enough shares collected!");
                         return Ok(());
@@ -441,13 +447,6 @@ fn run_terminal_loop(
                     eprintln!("  clearing words — please re-enter this share");
                     accumulated_words.clear();
                 }
-            }
-
-            // Drain any excess words beyond 28 into the next batch.
-            if accumulated_words.len() > MNEMONIC_WORDS {
-                let overflow: Vec<String> =
-                    accumulated_words.drain(MNEMONIC_WORDS..).collect();
-                accumulated_words = overflow;
             }
         }
     }
@@ -481,7 +480,10 @@ fn try_decode_mnemonic(words: &[&str]) -> Result<MnemonicPayload> {
 fn print_status(st: &CollectorState) {
     let total = st.shares.len();
     let threshold = st.threshold.map(|t| t.to_string()).unwrap_or("?".into());
-    let remaining = st.remaining();
+    let remaining = match st.threshold {
+        Some(_) => st.remaining().to_string(),
+        None => "?".to_string(),
+    };
     let xs: Vec<String> = st.shares.iter().map(|s| format!("#{}", s.x)).collect();
     eprintln!(
         "  status: {total}/{threshold} share(s) collected [{}], {remaining} more needed",
