@@ -7,7 +7,51 @@
 Encrypt files with Shamir secret sharing — split the key into QR cards with mnemonic backup words.
 Designed for offline PKI ceremonies and homelab root key handling.
 
+## Why
+
+A root CA private key needs to be kept for years but used rarely. Storing it
+in plaintext is dangerous; encrypting it with a single master key just moves
+the problem — now that key needs to be backed up in multiple places, and if
+*any* copy is compromised the secret is exposed.
+
+Shamir secret sharing solves this: split the master key into **N** shares so
+that any **K** of them can reconstruct it, but **K − 1** shares reveal
+nothing. You can hand shares to different people, store them in different
+locations, or combine both — losing a few shares doesn't destroy the secret,
+and a stolen share on its own is useless.
+
+Doing this by hand is tedious and error-prone. ssscrypt automates the full
+flow in one tool: encrypt a file, split the key, and produce physical backup
+cards (QR codes + mnemonic words) that can be scanned or typed back in to
+decrypt.
+
 Builds as a single portable Linux binary — links only glibc; camera/GUI libraries are loaded at runtime via `dlopen` and gracefully skipped when unavailable.
+
+## Best practices
+
+ssscrypt handles the encryption and share-splitting, but the security of the
+overall process depends on the environment you run it in. Before using this
+tool for anything important, **read up on key ceremony procedures and root CA
+management** — there is a wealth of existing guidance from CAs, NIST, and the
+broader PKI community.
+
+At a minimum, consider:
+
+- **Air-gap the machine.** Generate and split keys on a computer that has
+  never been and will never be connected to a network.
+- **Use a volatile OS.** Boot from a live USB (e.g. Tails) so that RAM is
+  wiped on shutdown and no secrets are written to persistent storage.
+- **Print cards securely.** Use a directly-connected printer (USB, no
+  Wi-Fi). Printer memory may retain pages — consider printers without
+  internal storage or destroy the drum/cartridge afterward.
+- **Distribute shares deliberately.** Store each share in a separate
+  physical location. Think about fire, flood, and access control.
+- **Verify the roundtrip.** After splitting, immediately reconstruct from
+  the threshold number of shares and confirm the decrypted file matches
+  the original before you destroy the plaintext. For keys generated
+  internally by `x509 create-root`, you can verify the decrypted output
+  has a valid PEM header (`-----BEGIN PRIVATE KEY-----`) and that the
+  certificate and key pair match.
 
 > **⚠ Security notice**: This software has **not been externally audited**. The cryptographic
 > primitives (`chacha20poly1305`, `ed25519-dalek`, `blake3`) are well-regarded Rust crates,
