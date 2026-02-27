@@ -1,8 +1,10 @@
 # ssscrypt
 
 [![CI](https://github.com/k-forss/ssscrypt/actions/workflows/ci.yml/badge.svg)](https://github.com/k-forss/ssscrypt/actions/workflows/ci.yml)
+[![Dependency audit](https://github.com/k-forss/ssscrypt/actions/workflows/audit.yml/badge.svg)](https://github.com/k-forss/ssscrypt/actions/workflows/audit.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org)
+[![GitHub release](https://img.shields.io/github/v/release/k-forss/ssscrypt)](https://github.com/k-forss/ssscrypt/releases/latest)
 
 Encrypt files with Shamir secret sharing — split the key into QR cards with mnemonic backup words.
 Designed for offline PKI ceremonies and homelab root key handling.

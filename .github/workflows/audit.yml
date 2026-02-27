@@ -10,6 +10,9 @@ on:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
 
+permissions:
+  contents: read
+
 jobs:
   deny:
     name: Dependency Checks

@@ -567,7 +567,6 @@ fn x509_create_root(args: CreateRootArgs) -> Result<()> {
 
     // Write certificate PEM.
     std::fs::write(&out_cert, &cert_pem).with_context(|| format!("write cert {:?}", out_cert))?;
-    eprintln!("x509: wrote certificate: {:?}", out_cert);
 
     // Encrypt the private key using ssscrypt.
     let group = cn.clone();
@@ -717,7 +716,6 @@ fn x509_sign_csr(args: SignCsrArgs) -> Result<()> {
     // Write signed certificate.
     std::fs::write(&out_cert, &signed_pem)
         .with_context(|| format!("write signed cert {:?}", out_cert))?;
-    eprintln!("x509: wrote signed certificate: {:?}", out_cert);
 
     Ok(())
 }

@@ -32,10 +32,6 @@
           {
             "context": "Test",
             "integration_id": 15368
-          },
-          {
-            "context": "Dependency Checks",
-            "integration_id": 15368
           }
         ]
       }
