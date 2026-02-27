@@ -163,7 +163,7 @@ fn draw_rect(img: &mut GrayImage, x: u32, y: u32, w: u32, h: u32, thick: u32) {
 /// Build the QR payload: the full binary-serialized share.
 ///
 /// The share embeds its group name, so no separate label is needed.
-pub fn qr_payload(share: &Share) -> Vec<u8> {
+pub fn qr_payload(share: &Share) -> Result<Vec<u8>> {
     share.to_bytes()
 }
 
@@ -229,7 +229,7 @@ pub fn render_card(
 ) -> Result<GrayImage> {
     let label = &share.group;
     // ── Generate QR matrix ──────────────────────────────────────
-    let payload = qr_payload(share);
+    let payload = qr_payload(share)?;
     let qr = QrCode::with_error_correction_level(&payload, EcLevel::M)
         .context("failed to generate QR code (label may be too long)")?;
     let qr_side = qr.width() as u32 * QR_MODULE_PX;
@@ -497,7 +497,7 @@ mod tests {
     #[test]
     fn qr_payload_roundtrip() {
         let share = test_share();
-        let payload = qr_payload(&share);
+        let payload = qr_payload(&share).unwrap();
         let parsed = parse_qr_payload(&payload).unwrap();
         assert_eq!(parsed.x, share.x);
         assert_eq!(parsed.y, share.y);
@@ -509,7 +509,7 @@ mod tests {
     fn qr_payload_empty_group() {
         let mut share = test_share();
         share.group = String::new();
-        let payload = qr_payload(&share);
+        let payload = qr_payload(&share).unwrap();
         let parsed = parse_qr_payload(&payload).unwrap();
         assert_eq!(parsed.group, "");
         assert_eq!(parsed.x, 3);
@@ -539,11 +539,10 @@ mod tests {
     }
 
     #[test]
-    fn render_card_long_label_truncated() {
+    fn render_card_long_label_rejected() {
         let mut share = test_share();
-        share.group = "A".repeat(500);
-        let img = render_card(&share, &test_words()).unwrap();
-        assert!(img.width() >= CARD_MIN_WIDTH);
+        share.group = "A".repeat(256);
+        assert!(render_card(&share, &test_words()).is_err());
     }
 
     #[test]
@@ -618,7 +617,7 @@ mod tests {
         let recovered = scan_card(&path).unwrap();
         assert_eq!(recovered.x, original.x);
         assert_eq!(recovered.group, original.group);
-        assert_eq!(recovered.to_bytes(), original.to_bytes());
+        assert_eq!(recovered.to_bytes().unwrap(), original.to_bytes().unwrap());
 
         std::fs::remove_dir_all(&dir).ok();
     }

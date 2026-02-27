@@ -72,9 +72,15 @@ pub struct Share {
 
 impl Share {
     /// Serialize to the variable-length binary format (for QR codes).
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
         let group_bytes = self.group.as_bytes();
-        let group_len = group_bytes.len().min(MAX_GROUP_LEN);
+        let group_len = group_bytes.len();
+        if group_len > MAX_GROUP_LEN {
+            bail!(
+                "share: group name is {} bytes, exceeds maximum of {MAX_GROUP_LEN}",
+                group_len
+            );
+        }
         let total = PRE_GROUP_LEN + group_len + SIG_LEN;
         let mut buf = Vec::with_capacity(total);
 
@@ -88,13 +94,13 @@ impl Share {
         buf.extend_from_slice(&group_bytes[..group_len]);
         buf.extend_from_slice(&self.signature);
 
-        buf
+        Ok(buf)
     }
 
     /// The bytes covered by the Ed25519 signature (everything before signature).
-    pub fn signed_bytes(&self) -> Vec<u8> {
-        let full = self.to_bytes();
-        full[..full.len() - SIG_LEN].to_vec()
+    pub fn signed_bytes(&self) -> Result<Vec<u8>> {
+        let full = self.to_bytes()?;
+        Ok(full[..full.len() - SIG_LEN].to_vec())
     }
 
     /// Parse from the variable-length binary format.
@@ -153,7 +159,7 @@ impl Share {
     /// Encode full binary to base64.
     #[cfg(test)]
     fn to_base64(&self) -> String {
-        B64.encode(self.to_bytes())
+        B64.encode(self.to_bytes().unwrap())
     }
 
     /// Decode from full binary base64.
@@ -214,6 +220,12 @@ impl Share {
             .map(|s| s.as_str())
             .unwrap_or("")
             .to_string();
+        let group_len = group.as_bytes().len();
+        if group_len > MAX_GROUP_LEN {
+            bail!(
+                "share: group name is {group_len} bytes, exceeds maximum of {MAX_GROUP_LEN}"
+            );
+        }
 
         let pubkey_hex = fields
             .get("pubkey")
@@ -446,7 +458,7 @@ mod tests {
     #[test]
     fn roundtrip_bytes_no_group() {
         let share = dummy_share();
-        let bytes = share.to_bytes();
+        let bytes = share.to_bytes().unwrap();
         assert_eq!(bytes.len(), SHARE_MIN_SIZE);
 
         let parsed = Share::from_bytes(&bytes).unwrap();
@@ -462,7 +474,7 @@ mod tests {
     #[test]
     fn roundtrip_bytes_with_group() {
         let share = grouped_share();
-        let bytes = share.to_bytes();
+        let bytes = share.to_bytes().unwrap();
         assert_eq!(bytes.len(), SHARE_MIN_SIZE + share.group.len());
 
         let parsed = Share::from_bytes(&bytes).unwrap();
@@ -477,7 +489,7 @@ mod tests {
         let share = grouped_share();
         let b64 = share.to_base64();
         let parsed = Share::from_base64(&b64).unwrap();
-        assert_eq!(parsed.to_bytes(), share.to_bytes());
+        assert_eq!(parsed.to_bytes().unwrap(), share.to_bytes().unwrap());
     }
 
     #[test]
@@ -498,7 +510,7 @@ mod tests {
         assert_eq!(parsed.group, "ForssCloud Root CA");
         assert_eq!(parsed.x, 3);
         assert_eq!(parsed.threshold, 2);
-        assert_eq!(parsed.to_bytes(), share.to_bytes());
+        assert_eq!(parsed.to_bytes().unwrap(), share.to_bytes().unwrap());
     }
 
     #[test]
@@ -512,7 +524,7 @@ mod tests {
 
     #[test]
     fn bad_magic_rejected() {
-        let mut bytes = dummy_share().to_bytes();
+        let mut bytes = dummy_share().to_bytes().unwrap();
         bytes[0] = b'X';
         assert!(Share::from_bytes(&bytes).is_err());
     }
@@ -524,9 +536,17 @@ mod tests {
 
     #[test]
     fn truncated_group_rejected() {
-        let mut bytes = grouped_share().to_bytes();
+        let mut bytes = grouped_share().to_bytes().unwrap();
         bytes.truncate(75);
         assert!(Share::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn group_too_long_rejected() {
+        let mut share = dummy_share();
+        share.group = "x".repeat(256);
+        assert!(share.to_bytes().is_err());
+        assert!(share.signed_bytes().is_err());
     }
 
     #[test]
@@ -561,17 +581,19 @@ mod tests {
     #[test]
     fn max_group_length() {
         let mut share = dummy_share();
-        share.group = "A".repeat(300);
-        let bytes = share.to_bytes();
-        let parsed = Share::from_bytes(&bytes).unwrap();
-        assert_eq!(parsed.group.len(), MAX_GROUP_LEN);
+        // Exactly at the limit — should succeed.
+        share.group = "A".repeat(MAX_GROUP_LEN);
+        assert!(share.to_bytes().is_ok());
+        // One byte over — should fail.
+        share.group = "A".repeat(MAX_GROUP_LEN + 1);
+        assert!(share.to_bytes().is_err());
     }
 
     #[test]
     fn signed_bytes_excludes_signature() {
         let share = grouped_share();
-        let full = share.to_bytes();
-        let signed = share.signed_bytes();
+        let full = share.to_bytes().unwrap();
+        let signed = share.signed_bytes().unwrap();
         assert_eq!(signed.len(), full.len() - SIG_LEN);
         assert_eq!(&signed[..], &full[..full.len() - SIG_LEN]);
     }
@@ -580,11 +602,10 @@ mod tests {
     fn text_parser_handles_continuation_lines() {
         let share = dummy_share();
         let text = share.to_text();
-        // Simulate a wrapped data line.
-        let text = text.replace(
-            "data: ",
-            "data: ",
-        );
+        // Simulate wrapped data and signature lines by moving their values
+        // onto indented continuation lines.
+        let text = text.replace("data: ", "data: \n    ");
+        let text = text.replace("signature: ", "signature: \n    ");
         let parsed = Share::from_text(&text).unwrap();
         assert_eq!(parsed.x, share.x);
     }

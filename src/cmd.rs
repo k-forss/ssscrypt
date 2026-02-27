@@ -273,7 +273,7 @@ fn encrypt(args: EncryptArgs) -> Result<()> {
     };
 
     // Read plaintext.
-    let plaintext = io::read_input(&args.io)?;
+    let mut plaintext = io::read_input(&args.io)?;
     eprintln!("encrypt: read {} bytes of plaintext", plaintext.len());
 
     // Obtain master key.
@@ -325,11 +325,11 @@ fn encrypt(args: EncryptArgs) -> Result<()> {
     // Split and write shares if requested.
     if let Some((threshold, share_count, dir)) = new_share_params {
         let raw_shares = sss::split(&master, threshold, share_count)?;
-        let signed_shares: Vec<Share> = raw_shares
+        let signed_shares: Result<Vec<Share>> = raw_shares
             .iter()
             .map(|r| crypto::sign_share(r, &keys, threshold, &args.group))
             .collect();
-        io::write_shares(&dir, &signed_shares)?;
+        io::write_shares(&dir, &signed_shares?)?;
         eprintln!(
             "encrypt: wrote {}-of-{} shares to {:?}",
             threshold, share_count, dir
@@ -337,6 +337,7 @@ fn encrypt(args: EncryptArgs) -> Result<()> {
     }
 
     // Zeroize.
+    plaintext.zeroize();
     master.zeroize();
     drop(keys);
     Ok(())
@@ -366,13 +367,14 @@ fn decrypt(args: DecryptArgs) -> Result<()> {
     let keys = crypto::derive_keys(&master);
 
     // Decrypt.
-    let plaintext = crypto::decrypt(&encrypted, &keys)?;
+    let mut plaintext = crypto::decrypt(&encrypted, &keys)?;
     eprintln!("decrypt: decrypted {} bytes of plaintext", plaintext.len());
 
     // Write plaintext.
     io::write_output(&args.io, &plaintext)?;
 
     // Zeroize.
+    plaintext.zeroize();
     master.zeroize();
     drop(keys);
     Ok(())
@@ -400,7 +402,7 @@ fn rotate(args: RotateArgs) -> Result<()> {
     let raw = crypto::shares_to_raw(&collected.shares);
     let mut old_master = sss::combine(&raw, collected.threshold)?;
     let old_keys = crypto::derive_keys(&old_master);
-    let plaintext = crypto::decrypt(&encrypted, &old_keys)?;
+    let mut plaintext = crypto::decrypt(&encrypted, &old_keys)?;
     eprintln!("rotate: decrypted {} bytes", plaintext.len());
 
     // Zeroize old key material.
@@ -412,17 +414,20 @@ fn rotate(args: RotateArgs) -> Result<()> {
     let new_keys = crypto::derive_keys(&new_master);
     let new_encrypted = crypto::encrypt(&plaintext, &new_keys, args.new_shares.threshold, &args.group)?;
 
+    // Zeroize plaintext now that it has been re-encrypted.
+    plaintext.zeroize();
+
     // Write re-encrypted output (text format).
     io::write_output(&args.io, new_encrypted.to_text().as_bytes())?;
     eprintln!("rotate: wrote re-encrypted output");
 
     // Write new shares.
     let new_raw = sss::split(&new_master, args.new_shares.threshold, args.new_shares.shares)?;
-    let new_signed: Vec<Share> = new_raw
+    let new_signed: Result<Vec<Share>> = new_raw
         .iter()
         .map(|r| crypto::sign_share(r, &new_keys, args.new_shares.threshold, &args.group))
         .collect();
-    io::write_shares(&args.new_shares.new_shares_dir, &new_signed)?;
+    io::write_shares(&args.new_shares.new_shares_dir, &new_signed?)?;
     eprintln!(
         "rotate: wrote {}-of-{} new shares to {:?}",
         args.new_shares.threshold,
@@ -462,11 +467,11 @@ fn gen_shares(args: GenSharesArgs) -> Result<()> {
 
     // Split into new shares.
     let new_raw = sss::split(&master, args.new_shares.threshold, args.new_shares.shares)?;
-    let new_signed: Vec<Share> = new_raw
+    let new_signed: Result<Vec<Share>> = new_raw
         .iter()
         .map(|r| crypto::sign_share(r, &keys, args.new_shares.threshold, &args.group))
         .collect();
-    io::write_shares(&args.new_shares.new_shares_dir, &new_signed)?;
+    io::write_shares(&args.new_shares.new_shares_dir, &new_signed?)?;
     eprintln!(
         "gen-shares: wrote {}-of-{} new shares to {:?}",
         args.new_shares.threshold,
@@ -556,11 +561,11 @@ fn x509_create_root(args: CreateRootArgs) -> Result<()> {
 
     // Split master key into shares and write.
     let raw_shares = sss::split(&master, threshold, shares)?;
-    let signed_shares: Vec<Share> = raw_shares
+    let signed_shares: Result<Vec<Share>> = raw_shares
         .iter()
         .map(|r| crypto::sign_share(r, &keys, threshold, &group))
         .collect();
-    io::write_shares(&new_shares_dir, &signed_shares)?;
+    io::write_shares(&new_shares_dir, &signed_shares?)?;
     eprintln!(
         "x509: wrote {}-of-{} shares to {:?}",
         threshold, shares, new_shares_dir

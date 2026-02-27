@@ -72,9 +72,15 @@ pub struct Header {
 
 impl Header {
     /// Serialize header to binary (variable-length).
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
         let group_bytes = self.group.as_bytes();
-        let group_len = group_bytes.len().min(MAX_GROUP_LEN);
+        let group_len = group_bytes.len();
+        if group_len > MAX_GROUP_LEN {
+            bail!(
+                "encrypted: group name is {} bytes, exceeds maximum of {MAX_GROUP_LEN}",
+                group_len
+            );
+        }
         let total = PRE_GROUP_LEN + group_len;
         let mut buf = Vec::with_capacity(total);
 
@@ -86,7 +92,7 @@ impl Header {
         buf.push(group_len as u8);
         buf.extend_from_slice(&group_bytes[..group_len]);
 
-        buf
+        Ok(buf)
     }
 }
 
@@ -128,12 +134,12 @@ pub struct EncryptedFile {
 
 impl EncryptedFile {
     /// The bytes covered by the Ed25519 signature: header ‖ ciphertext.
-    pub fn signed_bytes(&self) -> Vec<u8> {
-        let hdr = self.header.to_bytes();
+    pub fn signed_bytes(&self) -> Result<Vec<u8>> {
+        let hdr = self.header.to_bytes()?;
         let mut out = Vec::with_capacity(hdr.len() + self.ciphertext.len());
         out.extend_from_slice(&hdr);
         out.extend_from_slice(&self.ciphertext);
-        out
+        Ok(out)
     }
 
     // -------------------------------------------------------------------
@@ -143,7 +149,7 @@ impl EncryptedFile {
     /// Serialize to the full binary format (header ‖ ciphertext ‖ signature).
     #[cfg(test)]
     pub(crate) fn to_bytes(&self) -> Vec<u8> {
-        let signed = self.signed_bytes();
+        let signed = self.signed_bytes().unwrap();
         let mut out = Vec::with_capacity(signed.len() + SIG_LEN);
         out.extend_from_slice(&signed);
         out.extend_from_slice(&self.signature);
@@ -262,6 +268,12 @@ impl EncryptedFile {
             .map(|s| s.as_str())
             .unwrap_or("")
             .to_string();
+        let group_len = group.as_bytes().len();
+        if group_len > MAX_GROUP_LEN {
+            bail!(
+                "encrypted: group name is {group_len} bytes, exceeds maximum of {MAX_GROUP_LEN}"
+            );
+        }
 
         let pubkey_hex = fields
             .get("pubkey")
@@ -427,7 +439,7 @@ mod tests {
     #[test]
     fn header_bytes_no_group() {
         let hdr = dummy_header();
-        let bytes = hdr.to_bytes();
+        let bytes = hdr.to_bytes().unwrap();
         assert_eq!(bytes.len(), PRE_GROUP_LEN);
         assert_eq!(&bytes[..8], ENC_MAGIC);
         assert_eq!(bytes[66], 0); // group_len = 0
@@ -436,10 +448,17 @@ mod tests {
     #[test]
     fn header_bytes_with_group() {
         let hdr = grouped_header();
-        let bytes = hdr.to_bytes();
+        let bytes = hdr.to_bytes().unwrap();
         let group_name = "ForssCloud Root CA";
         assert_eq!(bytes.len(), PRE_GROUP_LEN + group_name.len());
         assert_eq!(bytes[66], group_name.len() as u8);
+    }
+
+    #[test]
+    fn header_group_too_long_rejected() {
+        let mut hdr = dummy_header();
+        hdr.group = "x".repeat(256);
+        assert!(hdr.to_bytes().is_err());
     }
 
     #[test]
@@ -505,7 +524,7 @@ mod tests {
     #[test]
     fn signed_bytes_covers_header_and_ciphertext() {
         let enc = grouped_encrypted();
-        let signed = enc.signed_bytes();
+        let signed = enc.signed_bytes().unwrap();
         let full = enc.to_bytes();
         assert_eq!(signed.len(), full.len() - SIG_LEN);
         assert_eq!(&signed[..], &full[..full.len() - SIG_LEN]);

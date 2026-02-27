@@ -51,8 +51,10 @@ impl CollectorState {
 
     /// How many more shares are needed (0 = ready).
     pub fn remaining(&self) -> usize {
-        let k = self.threshold.unwrap_or(2) as usize;
-        k.saturating_sub(self.shares.len())
+        match self.threshold {
+            Some(k) => (k as usize).saturating_sub(self.shares.len()),
+            None => usize::MAX,
+        }
     }
 
     /// Try to add a share. Returns true if accepted (new, valid).
@@ -430,7 +432,8 @@ fn run_terminal_loop(
                     let result = st.try_add_mnemonic(payload);
                     eprintln!("  mnemonic: {result}");
                     print_status(&st);
-                    accumulated_words.clear();
+                    // Keep any words beyond MNEMONIC_WORDS for the next share.
+                    accumulated_words = accumulated_words.split_off(MNEMONIC_WORDS);
                     if st.complete {
                         eprintln!("\n  ✓ Enough shares collected!");
                         return Ok(());
@@ -441,13 +444,6 @@ fn run_terminal_loop(
                     eprintln!("  clearing words — please re-enter this share");
                     accumulated_words.clear();
                 }
-            }
-
-            // Drain any excess words beyond 28 into the next batch.
-            if accumulated_words.len() > MNEMONIC_WORDS {
-                let overflow: Vec<String> =
-                    accumulated_words.drain(MNEMONIC_WORDS..).collect();
-                accumulated_words = overflow;
             }
         }
     }
