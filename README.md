@@ -2,7 +2,7 @@
 
 Encrypt files with a random symmetric key, split that key using threshold secret sharing (Shamir over GF(256)), and emit share files (base64-encoded).
 
-Designed for homelab PKI / offline root key handling. Builds as a fully static binary with no system library dependencies.
+Designed for homelab PKI / offline root key handling. Builds as a single portable Linux binary — links only glibc; camera/GUI libraries are loaded at runtime via `dlopen` and gracefully skipped when unavailable.
 
 > **Warning**: Review, test, and consider external audit before trusting with high-value keys.
 
@@ -287,7 +287,7 @@ The filename is informational; the tool parses the binary content.
 - **gen-shares is self-contained**: Enough shares → reconstruct master key → re-derive signing key → sign new shares. No encrypted file needed.
 - **Encrypt with existing shares**: Multiple files can be encrypted with the same master key by providing existing shares to reconstruct from.
 - **Anchored vs unanchored workflows**: `decrypt` and `rotate` are anchored by the ciphertext header pubkey — substitution attacks are not possible. `encrypt --shares-dir` and `gen-shares` are unanchored and should use `--pin-pubkey` or `--anchor-encrypted` to prevent key substitution (see Operational Safety).
-- **Static binary**: All dependencies are pure Rust (`chacha20poly1305`, `ed25519-dalek`, `rcgen`, `nokhwa`, `eframe`). No OpenSSL or system library linkage.
+- **Portable binary**: All crypto and core logic is pure Rust (`chacha20poly1305`, `ed25519-dalek`, `rcgen`). The binary links only glibc at build time. Camera/GUI libraries (`nokhwa`, `eframe`/`winit`) use runtime `dlopen` for X11/Wayland/GL — the camera window works when desktop libs are present and is gracefully skipped on headless systems.
 
 ## Operational safety
 
@@ -314,6 +314,6 @@ Write down the pubkey hex on paper during the initial ceremony and verify it dur
 
 - **Folder auto-discovery**: `--shares-dir` loads all `*.share.txt` files
 - **QR card scanning**: Live camera window (via `nokhwa` + `eframe`) scans QR codes in real time
-- **Mnemonic word input**: 28 words per share, typed into the terminal with tab completion and fuzzy correction
+- **Mnemonic word input**: 30 words per share, entered one at a time in raw-mode terminal with shadow autocomplete, case enforcement, and fuzzy correction
 
 All methods feed into the same interactive collector, which deduplicates shares and returns once the threshold is met.
