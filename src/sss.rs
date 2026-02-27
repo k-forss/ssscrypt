@@ -98,7 +98,7 @@ fn split_xs_with_rng<R: RngCore + CryptoRng>(
     let kt = k as usize;
 
     // Convert secret bytes to u32 elements (big-endian).
-    let secret_elems: Vec<u32> = (0..ELEMENTS)
+    let mut secret_elems: Vec<u32> = (0..ELEMENTS)
         .map(|i| u32::from_be_bytes(secret[i * 4..(i + 1) * 4].try_into().unwrap()))
         .collect();
 
@@ -111,6 +111,9 @@ fn split_xs_with_rng<R: RngCore + CryptoRng>(
             coeffs[e][d] = rng.next_u32();
         }
     }
+
+    // Secret elements copied into coeffs — zeroize the copy.
+    secret_elems.zeroize();
 
     let mut out = Vec::with_capacity(xs.len());
     for &x in xs {
@@ -188,7 +191,7 @@ fn eval_poly(coeffs: &[u32], x: u32) -> u32 {
 
 /// Lagrange interpolation at x = 0.
 fn interpolate_at_zero<I: Iterator<Item = (u32, u32)>>(points: I) -> u32 {
-    let pts: Vec<(u32, u32)> = points.collect();
+    let mut pts: Vec<(u32, u32)> = points.collect();
     let mut acc = 0u32;
     for i in 0..pts.len() {
         let (xi, yi) = pts[i];
@@ -204,6 +207,11 @@ fn interpolate_at_zero<I: Iterator<Item = (u32, u32)>>(points: I) -> u32 {
         }
         let li = gf_mul(num, gf_inv(den));
         acc = gf_add(acc, gf_mul(yi, li));
+    }
+    // Zeroize Lagrange evaluation points (contain share y-values).
+    for p in &mut pts {
+        p.0 = 0;
+        p.1 = 0;
     }
     acc
 }

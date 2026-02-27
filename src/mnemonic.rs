@@ -19,6 +19,7 @@
 //! tab-autocomplete needs very few keystrokes.
 
 use anyhow::{bail, Result};
+use zeroize::Zeroize;
 
 /// Culled 1024-word English wordlist (Levenshtein-optimised, compile-time).
 const WORDLIST_RAW: &str = include_str!("../data/wordlist_1024.txt");
@@ -64,7 +65,8 @@ fn word_to_index(word: &str) -> Option<usize> {
 // ---------------------------------------------------------------------------
 
 /// Mnemonic payload extracted from a share.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Zeroize)]
+#[zeroize(drop)]
 pub struct MnemonicPayload {
     pub x: u32,
     pub y: [u8; 32],
@@ -79,6 +81,7 @@ impl MnemonicPayload {
         buf[4..36].copy_from_slice(&self.y);
         buf[36..40].copy_from_slice(&self.pubkey_prefix);
         buf
+        // NOTE: caller is responsible for zeroizing the returned array.
     }
 
     /// Deserialize from 40-byte array.
@@ -101,7 +104,7 @@ impl MnemonicPayload {
 /// Each token is either `lowercase` (bit=0) or `UPPERCASE` (bit=1).
 pub fn encode(payload: &MnemonicPayload) -> Vec<String> {
     let words = wordlist();
-    let data = payload.to_bytes();
+    let mut data = payload.to_bytes();
 
     // 10-bit checksum: first 10 bits of blake3(data).
     let hash = blake3::hash(&data);
@@ -118,6 +121,9 @@ pub fn encode(payload: &MnemonicPayload) -> Vec<String> {
         bits.push(((checksum >> i) & 1) as u8);
     }
     debug_assert_eq!(bits.len(), MNEMONIC_WORDS * BITS_PER_TOKEN);
+
+    // Zeroize the serialized payload now that bits are extracted.
+    data.zeroize();
 
     // Split into 30 groups of 11 bits.
     // Top 10 bits → word index, bottom 1 bit → case.
@@ -239,7 +245,10 @@ pub fn decode(input_words: &[&str]) -> Result<(MnemonicPayload, Vec<WordCorrecti
         );
     }
 
-    Ok((MnemonicPayload::from_bytes(&data), corrections))
+    let payload = MnemonicPayload::from_bytes(&data);
+    data.zeroize();
+
+    Ok((payload, corrections))
 }
 
 /// A token is UPPERCASE if every alphabetic char is uppercase.

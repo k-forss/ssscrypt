@@ -457,7 +457,7 @@ fn gen_shares(args: GenSharesArgs) -> Result<()> {
 
     // Reconstruct master key.
     let raw = crypto::shares_to_raw(&collected.shares);
-    let mut master = sss::combine(&raw, collected.threshold)?;
+    let master = Zeroizing::new(sss::combine(&raw, collected.threshold)?);
     let keys = crypto::derive_keys(&master);
 
     // Verify derived pubkey matches.
@@ -482,9 +482,7 @@ fn gen_shares(args: GenSharesArgs) -> Result<()> {
         args.new_shares_dir
     );
 
-    // Zeroize.
-    master.zeroize();
-    drop(keys);
+    // master and keys are zeroized on drop.
     Ok(())
 }
 
@@ -553,9 +551,13 @@ fn x509_create_root(args: CreateRootArgs) -> Result<()> {
 
     // Encrypt the private key using ssscrypt.
     let group = cn.clone();
-    let mut master = crypto::generate_master_key();
+    let master = Zeroizing::new(crypto::generate_master_key());
     let keys = crypto::derive_keys(&master);
     let encrypted = crypto::encrypt(key_pem.as_bytes(), &keys, threshold, &group)?;
+
+    // Zeroize the plaintext CA private key now that it's encrypted.
+    let mut key_pem = key_pem;
+    key_pem.zeroize();
 
     // Write encrypted key file (text format).
     std::fs::write(&out_key_enc, encrypted.to_text().as_bytes())
@@ -574,9 +576,7 @@ fn x509_create_root(args: CreateRootArgs) -> Result<()> {
         threshold, shares, new_shares_dir
     );
 
-    // Zeroize.
-    master.zeroize();
-    drop(keys);
+    // master and keys are zeroized on drop.
     Ok(())
 }
 
@@ -660,15 +660,15 @@ fn x509_sign_csr(args: SignCsrArgs) -> Result<()> {
 
     // Reconstruct master key and decrypt the CA private key.
     let raw = crypto::shares_to_raw(&collected.shares);
-    let mut master = sss::combine(&raw, collected.threshold)?;
+    let master = Zeroizing::new(sss::combine(&raw, collected.threshold)?);
     let keys = crypto::derive_keys(&master);
     let key_pem_bytes = crypto::decrypt(&encrypted, &keys)?;
-    let key_pem =
+    let mut key_pem =
         String::from_utf8(key_pem_bytes).context("decrypted key is not valid UTF-8")?;
     eprintln!("x509: decrypted CA private key");
 
-    // Zeroize key material.
-    master.zeroize();
+    // Zeroize key material eagerly before signing.
+    drop(master);
     drop(keys);
 
     // Sign the CSR.
@@ -681,6 +681,9 @@ fn x509_sign_csr(args: SignCsrArgs) -> Result<()> {
         pathlen,
     )?;
     eprintln!("x509: signed certificate");
+
+    // Zeroize the decrypted private key.
+    key_pem.zeroize();
 
     // Write signed certificate.
     std::fs::write(&out_cert, &signed_pem)

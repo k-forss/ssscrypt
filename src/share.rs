@@ -39,6 +39,7 @@ use base64::Engine;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
+use zeroize::Zeroize;
 
 const SHARE_MAGIC: &[u8; 2] = b"SS";
 pub const SHARE_VERSION: u8 = 1;
@@ -59,7 +60,8 @@ const SIG_LEN: usize = 64;
 const DATA_LEN: usize = 36;
 
 /// On-disk / in-memory representation of a single share.
-#[derive(Clone)]
+#[derive(Clone, Zeroize)]
+#[zeroize(drop)]
 pub struct Share {
     pub version: u8,
     pub threshold: u8,
