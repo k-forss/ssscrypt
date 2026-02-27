@@ -676,11 +676,11 @@ fn show_reject(
 
 /// Accept a typed word if it can be resolved or passed through for decode-time correction.
 ///
-/// Prefers the shadow completion (unique prefix match).  Falls back to an
-/// exact wordlist lookup of the typed text, or allows near-miss words through
-/// so that `mnemonic::decode()` can attempt fuzzy correction across the full
-/// phrase.  Returns `None` only for hard errors (mixed case, ambiguous prefix,
-/// or empty input).
+/// Prefers the shadow completion (unique prefix match).  For any other non-error
+/// completion state (`NoMatch`, `Empty`), the raw typed text is returned as-is so
+/// that `mnemonic::decode()` can attempt fuzzy correction across the full phrase.
+/// Returns `None` only for hard errors (`MixedCase`, mid-word `Ambiguous`) or empty
+/// input.  No wordlist lookup is performed here.
 fn try_accept(typed: &str, comp: &mnemonic::Completion) -> Option<String> {
     if typed.is_empty() {
         return None;
@@ -717,18 +717,27 @@ fn drain_camera(
     }
     // Camera-scanned shares.
     while let Ok(share) = cam_rx.try_recv() {
-        // Keep the critical section small: mutate state, then drop the lock.
-        let result = {
+        // Keep the critical section small: mutate state and format the status
+        // string while holding the lock, then drop the lock before any I/O.
+        let (result, status_line) = {
             let mut st = state.lock().unwrap();
-            st.try_add(share)
+            let result = st.try_add(share);
+            let total = st.shares.len();
+            let threshold = st.threshold.map(|t| t.to_string()).unwrap_or("?".into());
+            let remaining = match st.threshold {
+                Some(_) => st.remaining().to_string(),
+                None => "?".to_string(),
+            };
+            let xs: Vec<String> = st.shares.iter().map(|s| format!("#{}", s.x)).collect();
+            let status = format!(
+                "  status: {total}/{threshold} share(s) collected [{}], {remaining} more needed\r\n",
+                xs.join(", ")
+            );
+            (result, status)
         };
-        // Terminal output is done without holding the lock.
+        // All terminal I/O happens after the lock is released.
         write!(out, "\r\x1b[2K  camera: {result}\r\n")?;
-        // Re-acquire briefly only to read status for display.
-        {
-            let st = state.lock().unwrap();
-            write_status(&st, out)?;
-        }
+        write!(out, "{status_line}")?;
     }
     out.flush()?;
     Ok(())
