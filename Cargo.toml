@@ -3,7 +3,12 @@ name = "ssscrypt"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Encrypt files with threshold secret sharing (Shamir SSS + ChaCha20-Poly1305 + Ed25519)"
+description = "Encrypt files with Shamir secret sharing — split the key into QR cards with mnemonic backup words. Designed for offline PKI ceremonies."
+repository = "https://github.com/k-forss/ssscrypt"
+homepage = "https://github.com/k-forss/ssscrypt"
+readme = "README.md"
+keywords = ["shamir", "secret-sharing", "encryption", "pki", "qr-code"]
+categories = ["command-line-utilities", "cryptography"]
 
 [dependencies]
 anyhow = "1"
