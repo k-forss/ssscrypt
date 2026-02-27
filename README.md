@@ -61,23 +61,30 @@ At a minimum, consider:
 
 ## Install
 
-### From source (recommended)
-
-```bash
-cargo install --git https://github.com/k-forss/ssscrypt
-```
-
-Requires Rust 1.70+ and `libv4l-dev` (or equivalent) for camera support.
+ssscrypt is designed for air-gapped machines. Build or download the binary on a
+networked machine, then transfer it via USB.
 
 ### Pre-built binary
 
-Download from [GitHub Releases](https://github.com/k-forss/ssscrypt/releases).
-Built on Ubuntu 22.04 (glibc 2.35).
-
-## Build
+Download from [GitHub Releases](https://github.com/k-forss/ssscrypt/releases)
+(built on Ubuntu 22.04, glibc 2.35):
 
 ```bash
+curl -LO https://github.com/k-forss/ssscrypt/releases/latest/download/ssscrypt-x86_64-unknown-linux-gnu.tar.gz
+tar xzf ssscrypt-x86_64-unknown-linux-gnu.tar.gz
+# copy ssscrypt to a USB stick, then on the air-gapped machine:
+chmod +x ssscrypt && ./ssscrypt --help
+```
+
+### Build from source
+
+Requires Rust 1.70+ and `libv4l-dev` (or equivalent) for camera support.
+
+```bash
+git clone https://github.com/k-forss/ssscrypt.git
+cd ssscrypt
 cargo build --release
+# binary at target/release/ssscrypt — copy to USB
 ```
 
 ## Commands
