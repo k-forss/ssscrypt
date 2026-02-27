@@ -63,16 +63,19 @@ pub fn split_random_x(
 
     // Pick n unique random non-zero x values, avoiding excluded values.
     let exclude: std::collections::HashSet<u32> = exclude_xs.iter().copied().collect();
-    let mut xs = Vec::with_capacity(n as usize);
+    let mut xs: std::collections::HashSet<u32> =
+        std::collections::HashSet::with_capacity(n as usize);
     while xs.len() < n as usize {
         let x = loop {
             let v = rng.next_u32();
             if v != 0 { break v; }
         };
-        if !exclude.contains(&x) && !xs.contains(&x) {
-            xs.push(x);
+        if !exclude.contains(&x) {
+            xs.insert(x);
         }
     }
+
+    let xs: Vec<u32> = xs.into_iter().collect();
 
     split_xs_with_rng(secret, k, &xs, &mut rng)
 }

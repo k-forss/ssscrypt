@@ -110,7 +110,7 @@ pub fn encode(payload: &MnemonicPayload) -> Vec<String> {
     let hash = blake3::hash(&data);
     let checksum = ((hash.as_bytes()[0] as u16) << 2) | ((hash.as_bytes()[1] as u16) >> 6);
 
-    // Build bit stream: 296 data bits + 12 checksum bits = 308 bits.
+    // Build bit stream: 320 data bits + 10 checksum bits = 330 bits.
     let mut bits = Vec::with_capacity(MNEMONIC_WORDS * BITS_PER_TOKEN);
     for &byte in &data {
         for i in (0..8).rev() {

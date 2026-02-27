@@ -90,7 +90,7 @@ Reconstruct master key from existing shares and re-split into a new set. **Unanc
 
 Threshold and group are inherited from the collected shares — `gen-shares` re-splits the *same* key, so these properties cannot be changed (use `rotate` to create a new key with different parameters).
 
-New shares are assigned **random x values** (from 1–255) to minimise accidental collision with outstanding shares whose x values are unknown.
+New shares are assigned **random x values** (from 1 to 2^32-1) to minimise accidental collision with outstanding shares whose x values are unknown.
 
 ```bash
 # Pin with pubkey hex
@@ -225,7 +225,7 @@ version: 1
 threshold: 3
 group: Homelab Root CA
 pubkey: 0123456789abcdef…  (64 hex chars)
-data: <base64>             (x ‖ y — share index + GF(256) evaluation)
+data: <base64>             (x ‖ y — share index + GF(2^32) evaluation)
 signature: <base64>        (Ed25519 over the signed payload)
 ```
 
@@ -235,7 +235,7 @@ signature: <base64>        (Ed25519 over the signed payload)
 | threshold   | decimal   | shares required to reconstruct                  |
 | group       | UTF-8     | human-readable name (e.g. certificate CN)       |
 | pubkey      | hex       | 32-byte Ed25519 pubkey (grouping / matching)    |
-| data        | base64    | x (1 B, 1-based index) ‖ y (32 B, GF(256) value) |
+| data        | base64    | x (4 B, big-endian u32) ‖ y (32 B, GF(2^32) value) |
 | signature   | base64    | Ed25519 over all preceding fields (64 B)        |
 
 Shares are **file-independent** — the same shares can decrypt any file encrypted with that master key. `share_count` is intentionally omitted — it becomes stale when shares are re-split with `gen-shares`. The threshold and pubkey are sufficient for grouping and reconstruction.
@@ -249,20 +249,20 @@ Inside QR codes, shares are packed into a compact binary format:
 | magic        | 0      | 2       | `SS`                                            |
 | version      | 2      | 1       | share format version (1)                        |
 | threshold k  | 3      | 1       | shares required to reconstruct                  |
-| x            | 4      | 1       | share index (1-based)                           |
-| y            | 5      | 32      | share data (GF(256) evaluation)                 |
-| pubkey       | 37     | 32      | Ed25519 pubkey (standalone grouping / matching) |
-| group_len    | 69     | 1       | length of UTF-8 group name (0–255)              |
-| group        | 70     | 0–255   | human-readable name (e.g. certificate CN)       |
-| signature    | 70+N   | 64      | Ed25519 over bytes 0..70+N                      |
+| x            | 4      | 4       | share index (big-endian u32)                    |
+| y            | 8      | 32      | share data (GF(2^32) evaluation)                |
+| pubkey       | 40     | 32      | Ed25519 pubkey (standalone grouping / matching) |
+| group_len    | 72     | 1       | length of UTF-8 group name (0–255)              |
+| group        | 73     | 0–255   | human-readable name (e.g. certificate CN)       |
+| signature    | 73+N   | 64      | Ed25519 over bytes 0..73+N                      |
 
-Minimum: 134 bytes (group empty).
+Minimum: 137 bytes (group empty).
 
 ### Share QR card (`.share.jpg`)
 
 A JPEG card generated alongside every `.share.txt` file. Contains:
 - A QR code encoding the share's binary payload
-- 28 mnemonic backup words (1024-word list, 10-bit word + 1-bit case encoding, 12-bit checksum)
+- 30 mnemonic backup words (1024-word list, 10-bit word + 1-bit case encoding, 10-bit checksum)
 - Metadata label (group, threshold, share index)
 
 Shares can be recovered by scanning the QR code with a camera or by typing the mnemonic words into the interactive collector.
