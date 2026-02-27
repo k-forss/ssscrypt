@@ -687,7 +687,10 @@ fn try_accept(typed: &str, comp: &mnemonic::Completion) -> Option<String> {
     }
 
     // Hard error states → reject.
-    if matches!(comp, mnemonic::Completion::MixedCase | mnemonic::Completion::Ambiguous) {
+    if matches!(
+        comp,
+        mnemonic::Completion::MixedCase | mnemonic::Completion::Ambiguous
+    ) {
         return None;
     }
 
