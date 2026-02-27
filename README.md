@@ -1,10 +1,34 @@
 # ssscrypt
 
-Encrypt files with a random symmetric key, split that key using threshold secret sharing (Shamir over GF(256)), and emit share files (base64-encoded).
+[![CI](https://github.com/k-forss/ssscrypt/actions/workflows/ci.yml/badge.svg)](https://github.com/k-forss/ssscrypt/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org)
 
-Designed for homelab PKI / offline root key handling. Builds as a single portable Linux binary — links only glibc; camera/GUI libraries are loaded at runtime via `dlopen` and gracefully skipped when unavailable.
+Encrypt files with Shamir secret sharing — split the key into QR cards with mnemonic backup words.
+Designed for offline PKI ceremonies and homelab root key handling.
 
-> **Warning**: Review, test, and consider external audit before trusting with high-value keys.
+Builds as a single portable Linux binary — links only glibc; camera/GUI libraries are loaded at runtime via `dlopen` and gracefully skipped when unavailable.
+
+> **⚠ Security notice**: This software has **not been externally audited**. The cryptographic
+> primitives (`chacha20poly1305`, `ed25519-dalek`, `blake3`) are well-regarded Rust crates,
+> but the protocol composition, share encoding, and key derivation are custom to this project.
+> Review the source, run your own tests, and consider professional audit before trusting
+> ssscrypt with high-value production keys. Suitable for homelab / personal PKI use.
+
+## Install
+
+### From source (recommended)
+
+```bash
+cargo install --git https://github.com/k-forss/ssscrypt
+```
+
+Requires Rust 1.70+ and `libv4l-dev` (or equivalent) for camera support.
+
+### Pre-built binary
+
+Download from [GitHub Releases](https://github.com/k-forss/ssscrypt/releases).
+Built on Ubuntu 22.04 (glibc 2.35).
 
 ## Build
 

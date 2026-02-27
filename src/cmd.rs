@@ -11,15 +11,15 @@ use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Encrypt a file and split the key into shares
+    /// Encrypt a file and split the key into K-of-N shares (QR cards + mnemonic words)
     Encrypt(EncryptArgs),
-    /// Decrypt a file using shares
+    /// Decrypt a file by reconstructing the key from shares
     Decrypt(DecryptArgs),
-    /// Re-encrypt with a new key (decrypt + encrypt without plaintext on disk)
+    /// Rotate: decrypt with old shares, re-encrypt with a fresh key and new shares
     Rotate(RotateArgs),
-    /// Re-split an existing secret into new shares
+    /// Re-split an existing key into a new set of shares (same key, new share files)
     GenShares(GenSharesArgs),
-    /// X.509 certificate operations (create root CA, sign CSR)
+    /// X.509 certificate helpers: create a root CA or sign a CSR (pure Rust, no OpenSSL)
     #[command(subcommand)]
     X509(X509Command),
 }
@@ -154,9 +154,9 @@ pub struct GenSharesArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum X509Command {
-    /// Create a self-signed root CA certificate, encrypt its private key, and split into shares
+    /// Create a self-signed root CA, encrypt its private key, and split into shares
     CreateRoot(CreateRootArgs),
-    /// Sign a CSR using an encrypted CA key (decrypted via shares)
+    /// Sign a CSR using an encrypted CA key (reconstructed from shares)
     SignCsr(SignCsrArgs),
 }
 

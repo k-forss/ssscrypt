@@ -12,12 +12,15 @@ mod x509;
 use anyhow::Result;
 use clap::Parser;
 
-/// ssscrypt: Encrypt files with threshold secret sharing.
+/// ssscrypt — Encrypt files with Shamir secret sharing.
 ///
-/// Generates a random symmetric key, encrypts your file with XChaCha20-Poly1305,
-/// splits the key using Shamir secret sharing, and signs everything with Ed25519.
+/// Split a symmetric key into QR cards with mnemonic backup words.
+/// Any K-of-N shares can reconstruct the key; fewer reveal nothing.
+///
+/// Crypto: XChaCha20-Poly1305 (encryption) + Ed25519 (signing) + Blake3 (KDF).
+/// Shares: GF(2³²) Shamir, 30 mnemonic words each, individually signed.
 #[derive(Parser, Debug)]
-#[command(author, version, about)]
+#[command(author, version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: cmd::Command,

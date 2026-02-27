@@ -1,0 +1,45 @@
+# cargo-deny configuration
+# https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+unmaintained = "none"      # transitive deps (e.g. paste via nokhwa) — not actionable
+yanked = "warn"
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+    "OpenSSL",
+    "BSL-1.0",
+    "MPL-2.0",
+    "IJG",
+]
+unused-allowed-license = "allow"
+
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[[licenses.clarify]]
+crate = "unicode-ident"
+expression = "(MIT OR Apache-2.0) AND Unicode-3.0"
+license-files = [{ path = "LICENSE-UNICODE", hash = 0x3fb01745 }]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
