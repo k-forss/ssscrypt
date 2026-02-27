@@ -286,10 +286,7 @@ pub fn render_card(
     y += HR_THICK + GAP;
 
     let words_y = y;
-    y += words_block_h + GAP / 2;
-
-    let note_y = y;
-    y += text_h(SCALE_WORDS) + inner_margin;
+    y += words_block_h + inner_margin;
 
     let card_h = y;
 
@@ -339,15 +336,6 @@ pub fn render_card(
         let numbered = format!("{:>2}. {}", i + 1, word);
         draw_text(&mut img, wx, wy, &numbered, SCALE_WORDS);
     }
-
-    // ── Case-encoding note ──────────────────────────────────────
-    draw_text(
-        &mut img,
-        inner_margin,
-        note_y,
-        "UPPER = bit 1   lower = bit 0",
-        SCALE_WORDS,
-    );
 
     Ok(img)
 }
@@ -662,7 +650,7 @@ mod tests {
         assert_eq!(shares.len(), 2);
         assert_eq!(errors.len(), 1);
 
-        let xs: Vec<u8> = shares.iter().map(|s| s.x).collect();
+        let xs: Vec<u32> = shares.iter().map(|s| s.x).collect();
         assert!(xs.contains(&1));
         assert!(xs.contains(&2));
 

@@ -259,7 +259,7 @@ fn ingest_shares(
     };
 
     // Step 5: Deduplicate x values (keep first seen).
-    let mut seen_x = std::collections::HashSet::new();
+    let mut seen_x: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut deduped: Vec<Share> = Vec::new();
     for share in selected {
         if seen_x.insert(share.x) {

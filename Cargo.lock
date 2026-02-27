@@ -3115,6 +3115,7 @@ dependencies = [
  "rcgen",
  "rqrr",
  "time",
+ "winit",
  "zeroize",
 ]
 

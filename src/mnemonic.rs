@@ -1,6 +1,6 @@
 //! Mnemonic encoding for shares.
 //!
-//! Encodes a 37-byte payload (x + y + pubkey_prefix) into 28 case-encoded
+//! Encodes a 40-byte payload (x + y + pubkey_prefix) into 30 case-encoded
 //! tokens using a culled 1024-word English wordlist.
 //!
 //! Each token carries **11 bits**:
@@ -8,12 +8,12 @@
 //! - **1 bit** (LSB): case — `lowercase` = 0, `UPPERCASE` = 1
 //!
 //! ```text
-//! payload (37 bytes = 296 bits) + checksum (12 bits) = 308 bits = 28 × 11 bits
+//! payload (40 bytes = 320 bits) + checksum (10 bits) = 330 bits = 30 × 11 bits
 //! ```
 //!
 //! Example:  `abandon ABSORB abstract ABSURD accident ACCOUNT …`
 //!
-//! The 12-bit blake3 checksum catches transcription errors (1/4096 false-pass).
+//! The 10-bit blake3 checksum catches transcription errors (1/1024 false-pass).
 //! The wordlist is culled from BIP-39 to maximise minimum Levenshtein distance
 //! (≥ 2), so every single-character typo resolves **unambiguously** and
 //! tab-autocomplete needs very few keystrokes.
@@ -24,7 +24,7 @@ use anyhow::{bail, Result};
 const WORDLIST_RAW: &str = include_str!("../data/wordlist_1024.txt");
 
 /// Number of tokens in a mnemonic-encoded share.
-pub const MNEMONIC_WORDS: usize = 28;
+pub const MNEMONIC_WORDS: usize = 30;
 
 /// Bits per token: 10 (word index) + 1 (case).
 const BITS_PER_TOKEN: usize = 11;
@@ -32,11 +32,11 @@ const BITS_PER_TOKEN: usize = 11;
 /// Bits used for the word index.
 const WORD_INDEX_BITS: usize = 10;
 
-/// Payload: x(1) + y(32) + pubkey_prefix(4) = 37 bytes.
-pub const PAYLOAD_BYTES: usize = 37;
+/// Payload: x(4) + y(32) + pubkey_prefix(4) = 40 bytes.
+pub const PAYLOAD_BYTES: usize = 40;
 
 /// Checksum bits appended to the payload.
-const CHECKSUM_BITS: usize = 12;
+const CHECKSUM_BITS: usize = 10;
 
 /// Maximum suggestions returned by fuzzy matching.
 const MAX_SUGGESTIONS: usize = 5;
@@ -66,28 +66,28 @@ fn word_to_index(word: &str) -> Option<usize> {
 /// Mnemonic payload extracted from a share.
 #[derive(Clone, Debug)]
 pub struct MnemonicPayload {
-    pub x: u8,
+    pub x: u32,
     pub y: [u8; 32],
     pub pubkey_prefix: [u8; 4],
 }
 
 impl MnemonicPayload {
-    /// Serialize to 37-byte array.
+    /// Serialize to 40-byte array.
     pub fn to_bytes(&self) -> [u8; PAYLOAD_BYTES] {
         let mut buf = [0u8; PAYLOAD_BYTES];
-        buf[0] = self.x;
-        buf[1..33].copy_from_slice(&self.y);
-        buf[33..37].copy_from_slice(&self.pubkey_prefix);
+        buf[0..4].copy_from_slice(&self.x.to_be_bytes());
+        buf[4..36].copy_from_slice(&self.y);
+        buf[36..40].copy_from_slice(&self.pubkey_prefix);
         buf
     }
 
-    /// Deserialize from 37-byte array.
+    /// Deserialize from 40-byte array.
     pub fn from_bytes(bytes: &[u8; PAYLOAD_BYTES]) -> Self {
-        let x = bytes[0];
+        let x = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
         let mut y = [0u8; 32];
-        y.copy_from_slice(&bytes[1..33]);
+        y.copy_from_slice(&bytes[4..36]);
         let mut pubkey_prefix = [0u8; 4];
-        pubkey_prefix.copy_from_slice(&bytes[33..37]);
+        pubkey_prefix.copy_from_slice(&bytes[36..40]);
         Self { x, y, pubkey_prefix }
     }
 }
@@ -96,16 +96,16 @@ impl MnemonicPayload {
 // Encode
 // ---------------------------------------------------------------------------
 
-/// Encode a 37-byte payload into 28 case-encoded tokens.
+/// Encode a 40-byte payload into 30 case-encoded tokens.
 ///
 /// Each token is either `lowercase` (bit=0) or `UPPERCASE` (bit=1).
 pub fn encode(payload: &MnemonicPayload) -> Vec<String> {
     let words = wordlist();
     let data = payload.to_bytes();
 
-    // 12-bit checksum: first 12 bits of blake3(data).
+    // 10-bit checksum: first 10 bits of blake3(data).
     let hash = blake3::hash(&data);
-    let checksum = ((hash.as_bytes()[0] as u16) << 4) | ((hash.as_bytes()[1] as u16) >> 4);
+    let checksum = ((hash.as_bytes()[0] as u16) << 2) | ((hash.as_bytes()[1] as u16) >> 6);
 
     // Build bit stream: 296 data bits + 12 checksum bits = 308 bits.
     let mut bits = Vec::with_capacity(MNEMONIC_WORDS * BITS_PER_TOKEN);
@@ -119,7 +119,7 @@ pub fn encode(payload: &MnemonicPayload) -> Vec<String> {
     }
     debug_assert_eq!(bits.len(), MNEMONIC_WORDS * BITS_PER_TOKEN);
 
-    // Split into 28 groups of 11 bits.
+    // Split into 30 groups of 11 bits.
     // Top 10 bits → word index, bottom 1 bit → case.
     let mut result = Vec::with_capacity(MNEMONIC_WORDS);
     for chunk in bits.chunks_exact(BITS_PER_TOKEN) {
@@ -139,7 +139,7 @@ pub fn encode(payload: &MnemonicPayload) -> Vec<String> {
     result
 }
 
-/// Decode 28 case-encoded tokens back to a 37-byte payload.
+/// Decode 30 case-encoded tokens back to a 40-byte payload.
 ///
 /// Returns the payload and a list of corrections (fuzzy-matched words).
 /// Fails if a word is unrecognised or checksum is invalid.
@@ -211,7 +211,7 @@ pub fn decode(input_words: &[&str]) -> Result<(MnemonicPayload, Vec<WordCorrecti
         bits.push(case);
     }
 
-    // Split: 296 data bits + 12 checksum bits.
+    // Split: 320 data bits + 10 checksum bits.
     let (data_bits, checksum_bits_slice) = bits.split_at(PAYLOAD_BYTES * 8);
 
     // Reconstruct data bytes.
@@ -230,7 +230,7 @@ pub fn decode(input_words: &[&str]) -> Result<(MnemonicPayload, Vec<WordCorrecti
         checksum = (checksum << 1) | bit as u16;
     }
     let hash = blake3::hash(&data);
-    let expected = ((hash.as_bytes()[0] as u16) << 4) | ((hash.as_bytes()[1] as u16) >> 4);
+    let expected = ((hash.as_bytes()[0] as u16) << 2) | ((hash.as_bytes()[1] as u16) >> 6);
     if checksum != expected {
         bail!(
             "mnemonic checksum failed (expected {:03x}, got {:03x}) — likely a transcription error",
@@ -384,7 +384,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 #[cfg(test)]
 fn format_card(
     words: &[String],
-    x: u8,
+    x: u32,
     threshold: u8,
     version: u8,
     pubkey_hex: &str,
@@ -401,8 +401,9 @@ fn format_card(
     ));
     out.push_str("├──────────────────────────────────────┤\n");
 
-    // 7 rows × 4 words.
-    for row in 0..7 {
+    // Rows of 4 words.
+    let num_rows = (words.len() + 3) / 4;
+    for row in 0..num_rows {
         let start = row * 4;
         let end = std::cmp::min(start + 4, words.len());
         let row_words: Vec<&str> = words[start..end].iter().map(|s| s.as_str()).collect();
@@ -611,8 +612,8 @@ mod tests {
         assert!(card.contains("Share #3"));
         assert!(card.contains("k=3"));
         assert!(card.contains("pk:"));
-        // Should have 28 numbered words.
-        assert!(card.contains("28."));
+        // Should have 30 numbered words.
+        assert!(card.contains("30."));
         // Footer with case explanation.
         assert!(card.contains("UPPER"));
     }
