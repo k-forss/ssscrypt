@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, DistinguishedName,
-    DnType, IsCa, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
+    DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
 };
 use time::{Duration, OffsetDateTime};
 
@@ -47,8 +47,8 @@ pub fn create_self_signed_root(
 
 /// Sign a CSR with an issuer certificate and private key.
 ///
-/// Parses the issuer cert and key from PEM, reconstructs the issuer `Certificate`
-/// for rcgen, then signs the CSR with the requested validity and CA settings.
+/// Parses the issuer cert and key from PEM into an `Issuer`, then signs the
+/// CSR with the requested validity and CA settings.
 ///
 /// Returns the signed certificate PEM.
 /// `not_before` sets the certificate validity start; pass `OffsetDateTime::now_utc()`
@@ -62,13 +62,10 @@ pub fn sign_csr(
     is_ca: bool,
     pathlen: Option<u8>,
 ) -> Result<String> {
-    // Reconstruct issuer Certificate from existing PEM.
-    let issuer_params =
-        CertificateParams::from_ca_cert_pem(issuer_cert_pem).context("parse issuer cert PEM")?;
+    // Build issuer from existing CA cert + key PEM.
     let issuer_key = KeyPair::from_pem(issuer_key_pem).context("parse issuer key PEM")?;
-    let issuer_cert = issuer_params
-        .self_signed(&issuer_key)
-        .context("reconstruct issuer certificate for signing")?;
+    let issuer =
+        Issuer::from_ca_cert_pem(issuer_cert_pem, issuer_key).context("parse issuer cert PEM")?;
 
     // Parse CSR.
     let mut csr = CertificateSigningRequestParams::from_pem(csr_pem).context("parse CSR PEM")?;
@@ -92,9 +89,7 @@ pub fn sign_csr(
         ];
     }
 
-    let signed = csr
-        .signed_by(&issuer_cert, &issuer_key)
-        .context("sign CSR")?;
+    let signed = csr.signed_by(&issuer).context("sign CSR")?;
 
     Ok(signed.pem())
 }
