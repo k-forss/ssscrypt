@@ -17,7 +17,7 @@ jobs:
     name: Build release binary
     runs-on: ubuntu-22.04   # glibc 2.35 — broad compatibility
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
 
