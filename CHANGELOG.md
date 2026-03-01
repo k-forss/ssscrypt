@@ -7,10 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] — 2026-03-01
+## [0.2.0] — 2026-03-01
 
-Initial release — encrypt files with Shamir secret sharing, split the key
-into QR cards with mnemonic backup words.
+First public release — encrypt files with Shamir secret sharing, split the
+key into QR cards with mnemonic backup words.
+
+**Breaking** (vs v0.1.0): GF(2³²) polynomial changed from 0x8D to 0x0040_0007
+(primitive, [Partow table](https://www.partow.net/programming/polynomials/index.html)).
+Shares created with v0.1.0 are incompatible.
 
 ### Added
 
