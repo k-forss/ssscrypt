@@ -127,6 +127,10 @@ pub struct PinArgs {
     #[arg(long)]
     pub pin_pubkey: Option<String>,
 
+    /// Pin expected pubkey fingerprint (hex prefix, e.g. first 16 chars from share card)
+    #[arg(long)]
+    pub pin_fpr: Option<String>,
+
     /// Extract expected pubkey from an existing encrypted file's header
     #[arg(long, value_name = "FILE")]
     pub anchor_encrypted: Option<PathBuf>,
@@ -302,13 +306,23 @@ fn encrypt(args: EncryptArgs) -> Result<()> {
     let (master, existing_threshold) = if has_existing {
         // Resolve anchor for unanchored operation.
         let anchor = resolve_anchor(&args.pin)?;
-        let collected = gather_shares(args.shares_dir.as_deref(), anchor.as_ref(), None)?;
+        let pubkey_anchor = anchor.as_ref().and_then(|a| match a {
+            ResolvedAnchor::Pubkey(pk) => Some(pk),
+            ResolvedAnchor::FingerprintPrefix(_) => None,
+        });
+        let collected = gather_shares(args.shares_dir.as_deref(), pubkey_anchor, None)?;
         eprintln!(
             "encrypt: reconstructing key from {} share(s)",
             collected.shares.len()
         );
         let raw = crypto::shares_to_raw(&collected.shares);
         let master = Zeroizing::new(sss::combine(&raw, collected.threshold)?);
+
+        // Post-reconstruction fingerprint verification.
+        if let Some(ResolvedAnchor::FingerprintPrefix(ref prefix)) = anchor {
+            verify_fingerprint_pin(&master, prefix)?;
+        }
+
         (master, Some((collected.threshold, collected.pubkey)))
     } else {
         let key = Zeroizing::new(crypto::generate_master_key());
@@ -323,6 +337,14 @@ fn encrypt(args: EncryptArgs) -> Result<()> {
         .or(existing_threshold.map(|(t, _)| t))
         .unwrap_or(2);
     let keys = crypto::derive_keys(&master);
+
+    // Print key identity for TOFU (trust on first use).
+    let pk = crypto::pubkey_bytes(&keys.signing);
+    let fpr = crypto::pubkey_fingerprint(&pk);
+    eprintln!(
+        "encrypt: key fingerprint: {}",
+        crypto::format_fingerprint(&fpr)
+    );
 
     // Verify derived pubkey matches if using existing key.
     if let Some((_, expected_pk)) = existing_threshold {
@@ -451,9 +473,13 @@ fn rotate(args: RotateArgs) -> Result<()> {
 fn gen_shares(args: GenSharesArgs) -> Result<()> {
     // Resolve anchor for unanchored operation.
     let anchor = resolve_anchor(&args.pin)?;
+    let pubkey_anchor = anchor.as_ref().and_then(|a| match a {
+        ResolvedAnchor::Pubkey(pk) => Some(pk),
+        ResolvedAnchor::FingerprintPrefix(_) => None,
+    });
 
     // Gather old shares.
-    let collected = gather_shares(args.shares_dir.as_deref(), anchor.as_ref(), None)?;
+    let collected = gather_shares(args.shares_dir.as_deref(), pubkey_anchor, None)?;
 
     // Threshold and group are inherited from the collected shares — gen-shares
     // re-splits the same key, so these properties must not change.
@@ -469,6 +495,11 @@ fn gen_shares(args: GenSharesArgs) -> Result<()> {
     let raw = crypto::shares_to_raw(&collected.shares);
     let master = Zeroizing::new(sss::combine(&raw, collected.threshold)?);
     let keys = crypto::derive_keys(&master);
+
+    // Post-reconstruction fingerprint verification.
+    if let Some(ResolvedAnchor::FingerprintPrefix(ref prefix)) = anchor {
+        verify_fingerprint_pin(&master, prefix)?;
+    }
 
     // Verify derived pubkey matches.
     let derived_pk = crypto::pubkey_bytes(&keys.signing);
@@ -572,6 +603,15 @@ fn x509_create_root(args: CreateRootArgs) -> Result<()> {
     let group = cn.clone();
     let master = Zeroizing::new(crypto::generate_master_key());
     let keys = crypto::derive_keys(&master);
+
+    // Print key identity for TOFU — record this fingerprint offline.
+    let pk = crypto::pubkey_bytes(&keys.signing);
+    let fpr = crypto::pubkey_fingerprint(&pk);
+    eprintln!(
+        "x509: key fingerprint: {}  ← record this for --pin-fpr",
+        crypto::format_fingerprint(&fpr)
+    );
+
     let encrypted = crypto::encrypt(key_pem.as_bytes(), &keys, threshold, &group)?;
 
     // Zeroize the plaintext CA private key now that it's encrypted.
@@ -771,28 +811,89 @@ fn resolve_not_before(raw: Option<&str>) -> Result<OffsetDateTime> {
     }
 }
 
-/// Resolve the anchor pubkey from --pin-pubkey or --anchor-encrypted.
-fn resolve_anchor(pin: &PinArgs) -> Result<Option<[u8; 32]>> {
-    match (&pin.pin_pubkey, &pin.anchor_encrypted) {
-        (Some(_), Some(_)) => {
-            bail!("cannot use both --pin-pubkey and --anchor-encrypted");
-        }
-        (Some(hex_prefix), None) => {
-            // Parse hex string as a full 32-byte pubkey.
-            let bytes = parse_hex_pubkey(hex_prefix)?;
-            Ok(Some(bytes))
-        }
-        (None, Some(path)) => {
-            // Read header from encrypted file.
-            let data =
-                std::fs::read(path).with_context(|| format!("read anchor file {:?}", path))?;
-            let encrypted = EncryptedFile::parse(&data)
-                .with_context(|| format!("parse anchor file {:?}", path))?;
-            eprintln!("  anchor pubkey from {:?}", path);
-            Ok(Some(encrypted.header.pubkey))
-        }
-        (None, None) => Ok(None),
+/// Resolved anchor for pubkey pinning.
+///
+/// Either a full 32-byte pubkey (from `--pin-pubkey` or `--anchor-encrypted`)
+/// or a fingerprint prefix (from `--pin-fpr`) used for post-reconstruction
+/// verification.
+pub enum ResolvedAnchor {
+    /// Full pubkey — can be used to filter shares before reconstruction.
+    Pubkey([u8; 32]),
+    /// Fingerprint prefix (hex bytes) — verified after key reconstruction
+    /// by computing BLAKE3(derived_pubkey) and checking the prefix matches.
+    FingerprintPrefix(Vec<u8>),
+}
+
+/// Resolve the anchor pubkey from --pin-pubkey, --pin-fpr, or --anchor-encrypted.
+fn resolve_anchor(pin: &PinArgs) -> Result<Option<ResolvedAnchor>> {
+    let provided = [
+        pin.pin_pubkey.is_some(),
+        pin.pin_fpr.is_some(),
+        pin.anchor_encrypted.is_some(),
+    ];
+    if provided.iter().filter(|&&b| b).count() > 1 {
+        bail!("cannot use more than one of --pin-pubkey, --pin-fpr, --anchor-encrypted");
     }
+
+    if let Some(hex_str) = &pin.pin_pubkey {
+        let bytes = parse_hex_pubkey(hex_str)?;
+        return Ok(Some(ResolvedAnchor::Pubkey(bytes)));
+    }
+
+    if let Some(hex_prefix) = &pin.pin_fpr {
+        // Parse the hex prefix (variable length, must be even number of chars).
+        let hex = hex_prefix.trim().replace(':', "");
+        if hex.is_empty() {
+            bail!("--pin-fpr must be a non-empty hex string");
+        }
+        if hex.len() % 2 != 0 {
+            bail!("--pin-fpr hex must have an even number of characters (got {})", hex.len());
+        }
+        if hex.len() > 16 {
+            bail!("--pin-fpr prefix is at most 8 bytes (16 hex chars), got {} chars", hex.len());
+        }
+        let mut bytes = Vec::with_capacity(hex.len() / 2);
+        for i in (0..hex.len()).step_by(2) {
+            bytes.push(u8::from_str_radix(&hex[i..i + 2], 16)
+                .with_context(|| format!("invalid hex in --pin-fpr at position {i}"))?);
+        }
+        return Ok(Some(ResolvedAnchor::FingerprintPrefix(bytes)));
+    }
+
+    if let Some(path) = &pin.anchor_encrypted {
+        let data = std::fs::read(path).with_context(|| format!("read anchor file {:?}", path))?;
+        let encrypted = EncryptedFile::parse(&data)
+            .with_context(|| format!("parse anchor file {:?}", path))?;
+        eprintln!("  anchor pubkey from {:?}", path);
+        return Ok(Some(ResolvedAnchor::Pubkey(encrypted.header.pubkey)));
+    }
+
+    Ok(None)
+}
+
+/// Verify a reconstructed master key's pubkey fingerprint matches a --pin-fpr prefix.
+fn verify_fingerprint_pin(master: &[u8; 32], expected_prefix: &[u8]) -> Result<()> {
+    let keys = crypto::derive_keys(master);
+    let pubkey = crypto::pubkey_bytes(&keys.signing);
+    let fpr = crypto::pubkey_fingerprint(&pubkey);
+
+    if fpr[..expected_prefix.len()] != *expected_prefix {
+        bail!(
+            "reconstructed key fingerprint does not match --pin-fpr\n\
+             derived:  {}\n\
+             expected: {} (prefix)",
+            crypto::format_fingerprint(&fpr),
+            expected_prefix
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+    }
+    eprintln!(
+        "  verified fingerprint: {}",
+        crypto::format_fingerprint(&fpr)
+    );
+    Ok(())
 }
 
 /// Parse a hex-encoded 32-byte pubkey.

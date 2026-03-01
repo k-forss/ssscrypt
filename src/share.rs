@@ -111,6 +111,29 @@ impl Share {
         Ok(full[..full.len() - SIG_LEN].to_vec())
     }
 
+    /// Compute a short fingerprint of this share for human sanity-checking.
+    ///
+    /// Returns the first 4 bytes (8 hex chars) of BLAKE3(x ‖ y).
+    /// Printed on paper cards so the holder can quickly verify which share
+    /// they're looking at without revealing the full share data.
+    pub fn share_fingerprint(&self) -> [u8; 4] {
+        let mut data = Vec::with_capacity(4 + 32);
+        data.extend_from_slice(&self.x.to_be_bytes());
+        data.extend_from_slice(&self.y);
+        let hash = blake3::hash(&data);
+        let mut fpr = [0u8; 4];
+        fpr.copy_from_slice(&hash.as_bytes()[..4]);
+        fpr
+    }
+
+    /// Format the share fingerprint as hex.
+    pub fn share_fingerprint_hex(&self) -> String {
+        self.share_fingerprint()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
     /// Parse from the variable-length binary format.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < SHARE_MIN_SIZE {

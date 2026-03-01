@@ -58,6 +58,27 @@ pub fn pubkey_bytes(key: &SigningKey) -> [u8; 32] {
     key.verifying_key().to_bytes()
 }
 
+/// Compute a short fingerprint of a pubkey for human comparison.
+///
+/// Returns the first 8 bytes (16 hex chars) of BLAKE3(pubkey).
+/// This is printed on share cards and used by `--pin-fpr` for prefix matching.
+pub fn pubkey_fingerprint(pubkey: &[u8; 32]) -> [u8; 8] {
+    let hash = blake3::hash(pubkey);
+    let mut fpr = [0u8; 8];
+    fpr.copy_from_slice(&hash.as_bytes()[..8]);
+    fpr
+}
+
+/// Format a pubkey fingerprint as a colon-separated hex string.
+///
+/// Example: `"a1b2:c3d4:e5f6:7890"`
+pub fn format_fingerprint(fpr: &[u8; 8]) -> String {
+    fpr.chunks(2)
+        .map(|pair| format!("{:02x}{:02x}", pair[0], pair[1]))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
 // ---------------------------------------------------------------------------
 // Encryption / decryption
 // ---------------------------------------------------------------------------
@@ -198,8 +219,8 @@ pub struct ValidatedShares {
 /// `anchor_pubkey`: if available (from header, --pin-pubkey, or --anchor-encrypted),
 /// only shares matching this pubkey are accepted. Otherwise, select the largest
 /// unambiguous group.
-#[cfg(test)]
-fn ingest_shares(
+#[allow(dead_code)] // public API — used by tests and available for batch ingestion
+pub fn ingest_shares(
     raw_shares: Vec<Share>,
     anchor_pubkey: Option<&[u8; 32]>,
 ) -> Result<ValidatedShares> {

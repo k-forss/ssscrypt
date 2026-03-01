@@ -3,8 +3,8 @@
 //! Produces a printable image (JPEG or PNG) containing:
 //!
 //! 1. **Label** — human-readable group name at the top (from the share)
-//! 2. **QR code** — encodes the full binary share (variable length)
-//! 3. **Mnemonic words** — 28 case-encoded tokens as a manual-entry fallback
+//! 2. **QR code** — self-describing URI encoding the full binary share
+//! 3. **Mnemonic words** — 30 case-encoded tokens as a manual-entry fallback
 //!
 //! The output is a pre-rendered raster image — pure pixel data with no
 //! embedded text objects, metadata, or indexable strings.  Unlike PDF or
@@ -13,10 +13,22 @@
 //!
 //! ## QR payload format
 //!
-//! The QR code contains the full binary-serialized share (including group
-//! name and Ed25519 signature).  See [`Share::to_bytes`] for the layout.
+//! The QR code encodes a self-describing URI string:
+//!
+//! ```text
+//! ssscrypt:share:v1:<base64url(binary_share)>:<crc32_hex>
+//! ```
+//!
+//! - `binary_share`: the full binary-serialized share (see [`Share::to_bytes`])
+//! - `crc32_hex`: CRC-32/ISO-HDLC of the raw binary bytes, 8 hex digits
+//!
+//! The URI prefix makes the payload identifiable by any QR reader, and the
+//! CRC guards against scan corruption (the Ed25519 signature also provides
+//! integrity, but the CRC gives an immediate error before attempting parse).
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+use base64::Engine;
 use font8x8::UnicodeFonts;
 use image::codecs::jpeg::JpegEncoder;
 use image::{GrayImage, ImageEncoder, Luma};
@@ -158,22 +170,76 @@ fn draw_rect(img: &mut GrayImage, x: u32, y: u32, w: u32, h: u32, thick: u32) {
 // QR payload
 // ---------------------------------------------------------------------------
 
-/// Build the QR payload: the full binary-serialized share.
+/// QR payload URI prefix.
+const QR_URI_PREFIX: &str = "ssscrypt:share:v1:";
+
+/// Build the QR payload as a self-describing URI string.
 ///
-/// The share embeds its group name, so no separate label is needed.
+/// Format: `ssscrypt:share:v1:<base64url(binary_share)>:<crc32_hex>`
 ///
 /// # Errors
 ///
 /// Returns an error if serializing the share via [`Share::to_bytes`] fails,
 /// for example if the share contains an oversized group name.
 pub fn qr_payload(share: &Share) -> Result<Vec<u8>> {
-    share.to_bytes()
+    let binary = share.to_bytes()?;
+    let crc = crc32(&binary);
+    let b64 = B64URL.encode(&binary);
+    let uri = format!("{}{b64}:{crc:08x}", QR_URI_PREFIX);
+    Ok(uri.into_bytes())
 }
 
 /// Parse a QR payload back into a `Share`.
-#[cfg(test)]
-fn parse_qr_payload(data: &[u8]) -> Result<Share> {
+///
+/// Accepts both the new URI format (`ssscrypt:share:v1:...`) and the legacy
+/// raw binary format for backwards compatibility.
+pub fn parse_qr_payload(data: &[u8]) -> Result<Share> {
+    // Try URI format first.
+    if let Ok(text) = std::str::from_utf8(data) {
+        if let Some(rest) = text.strip_prefix(QR_URI_PREFIX) {
+            // Split off CRC suffix.
+            let (b64_part, crc_hex) = rest.rsplit_once(':')
+                .context("QR URI missing CRC32 suffix")?;
+            let binary = B64URL.decode(b64_part)
+                .context("QR URI: invalid base64url")?;
+
+            // Verify CRC.
+            let expected_crc = u32::from_str_radix(crc_hex, 16)
+                .context("QR URI: invalid CRC32 hex")?;
+            let actual_crc = crc32(&binary);
+            if expected_crc != actual_crc {
+                bail!(
+                    "QR CRC mismatch (expected {:08x}, got {:08x}) — scan error?",
+                    expected_crc,
+                    actual_crc
+                );
+            }
+
+            return Share::from_bytes(&binary)
+                .context("failed to parse share from QR URI payload");
+        }
+    }
+
+    // Fall back to legacy raw binary format.
     Share::from_bytes(data).context("failed to parse QR share payload")
+}
+
+/// CRC-32/ISO-HDLC (same as zlib/PNG/gzip).
+///
+/// Polynomial: 0xEDB88320 (reflected representation).
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB8_8320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    !crc
 }
 
 // ---------------------------------------------------------------------------
@@ -213,8 +279,9 @@ fn draw_qr(img: &mut GrayImage, x: u32, y: u32, qr: &QrCode) {
 /// ┌──────────────────────────────────┐
 /// │  ForssCloud Root CA              │  ← label
 /// ├──────────────────────────────────┤
-/// │  Share #3   k=2   v1            │  ← metadata
+/// │  Share x=00000003  k=2   v1     │  ← metadata
 /// │  pk: abcdef01234567...          │
+/// │  fpr: a1b2:c3d4:e5f6:7890       │  ← fingerprints
 /// ├──────────────────────────────────┤
 /// │         ██ ██ █ ██              │
 /// │         █ ███ ██ █              │  ← QR code
@@ -269,6 +336,9 @@ pub fn render_card(share: &Share, mnemonic_words: &[String]) -> Result<GrayImage
     y += text_h(SCALE_INFO) + GAP / 2;
 
     let info2_y = y;
+    y += text_h(SCALE_INFO) + GAP / 2;
+
+    let info3_y = y;
     y += text_h(SCALE_INFO) + GAP;
 
     let hr2_y = y;
@@ -301,16 +371,23 @@ pub fn render_card(share: &Share, mnemonic_words: &[String]) -> Result<GrayImage
 
     // ── Share metadata ──────────────────────────────────────────
     let line1 = format!(
-        "Share #{}   k={}   v{}",
+        "Share x={:08x}   k={}   v{}",
         share.x, share.threshold, share.version
     );
     draw_text(&mut img, inner_margin, info1_y, &line1, SCALE_INFO);
 
     let pk_hex: String = share.pubkey.iter().map(|b| format!("{:02x}", b)).collect();
+    let fpr = crate::crypto::pubkey_fingerprint(&share.pubkey);
+    let fpr_str = crate::crypto::format_fingerprint(&fpr);
+    let share_fpr = share.share_fingerprint_hex();
     let pk_max = ((inner_w / (8 * SCALE_INFO)) as usize).saturating_sub(4);
     let pk_display = &pk_hex[..pk_hex.len().min(pk_max)];
     let line2 = format!("pk: {}", pk_display);
     draw_text(&mut img, inner_margin, info2_y, &line2, SCALE_INFO);
+
+    // Extra info line: key fingerprint and share fingerprint.
+    let line3 = format!("fpr: {}  share: {}", fpr_str, share_fpr);
+    draw_text(&mut img, inner_margin, info3_y, &line3, SCALE_INFO);
 
     // ── HR 2 ────────────────────────────────────────────────────
     draw_hr(&mut img, inner_margin, hr2_y, inner_w);
@@ -407,11 +484,9 @@ fn scan_image(img: &GrayImage) -> Result<Share> {
     // Try each detected grid until we find a valid share.
     let mut last_err = None;
     for grid in &grids {
-        // decode_to writes raw bytes (binary-safe, unlike decode() which
-        // returns a String and may corrupt non-UTF-8 data).
         let mut data = Vec::new();
         match grid.decode_to(&mut data) {
-            Ok(_meta) => match Share::from_bytes(&data) {
+            Ok(_meta) => match parse_qr_payload(&data) {
                 Ok(share) => return Ok(share),
                 Err(e) => last_err = Some(e),
             },
@@ -497,9 +572,21 @@ mod tests {
 
     #[test]
     fn qr_payload_bad_data_rejected() {
-        // Too short — not a valid share binary.
+        // Random garbage — neither valid URI nor valid binary share.
         assert!(parse_qr_payload(b"too short").is_err());
         assert!(parse_qr_payload(&[0u8; 10]).is_err());
+        // Valid URI prefix but bad base64.
+        assert!(parse_qr_payload(b"ssscrypt:share:v1:!!!:00000000").is_err());
+    }
+
+    #[test]
+    fn qr_payload_crc_mismatch_rejected() {
+        let share = test_share();
+        let mut payload = qr_payload(&share).unwrap();
+        // Corrupt the last hex digit of the CRC.
+        let len = payload.len();
+        payload[len - 1] ^= 0x01;
+        assert!(parse_qr_payload(&payload).is_err());
     }
 
     // -- Card rendering --

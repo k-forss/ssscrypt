@@ -250,6 +250,16 @@ pub fn collect_shares(
 
     // ----- Phase 1: Load from folder -----
     if let Some(dir) = shares_dir {
+        eprintln!(
+            "  \u{26a0}  Loading shares from folder {:?}",
+            dir
+        );
+        eprintln!(
+            "     Folder-based loading is for ceremony convenience only."
+        );
+        eprintln!(
+            "     NEVER store \u{2265}k shares together long-term \u{2014} distribute them separately."
+        );
         let loaded = crate::io::load_shares(dir)?;
         let mut st = state.lock().unwrap();
 
@@ -949,11 +959,12 @@ impl ScannerApp {
             for grid in &grids {
                 let mut data = Vec::new();
                 if grid.decode_to(&mut data).is_ok() {
-                    if let Ok(share) = Share::from_bytes(&data) {
+                    if let Ok(share) = crate::qr::parse_qr_payload(&data) {
                         let x = share.x;
                         // Send to collector via channel.
                         let _ = self.tx.send(share);
-                        self.last_scan_result = format!("Scanned share #{x}!");
+                        self.last_scan_result =
+                            format!("Scanned share x={x:08x}!");
                     }
                 }
             }

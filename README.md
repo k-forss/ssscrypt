@@ -118,6 +118,11 @@ cat root.key | ssscrypt encrypt \
 ssscrypt encrypt --in backup.key --out backup.key.enc \
   --shares-dir shares/ \
   --pin-pubkey 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+# Pin with fingerprint (shorter — first 16 hex chars from share card)
+ssscrypt encrypt --in backup.key --out backup.key.enc \
+  --shares-dir shares/ \
+  --pin-fpr a1b2:c3d4:e5f6:7890
 ```
 
 Share files created in `--new-shares-dir`:
@@ -181,6 +186,12 @@ ssscrypt gen-shares \
   --shares-dir shares_old/ \
   -n 5 --new-shares-dir shares_new/ \
   --anchor-encrypted root-key.enc
+
+# Pin with fingerprint prefix (colon-separated hex from share card)
+ssscrypt gen-shares \
+  --shares-dir shares_old/ \
+  -n 5 --new-shares-dir shares_new/ \
+  --pin-fpr a1b2:c3d4:e5f6:7890
 ```
 
 ### x509
@@ -338,9 +349,16 @@ Minimum: 137 bytes (group empty).
 ### Share QR card (`.share.jpg`)
 
 A JPEG card generated alongside every `.share.txt` file. Contains:
-- A QR code encoding the share's binary payload
+- A QR code encoding the share in a self-describing URI format
 - 30 mnemonic backup words (1024-word list, 10-bit word + 1-bit case encoding, 10-bit checksum)
-- Metadata label (group, threshold, share index)
+- Metadata: group, threshold, share x value (hex), key fingerprint, share fingerprint
+
+QR payload format:
+```
+ssscrypt:share:v1:<base64url(binary_share)>:<crc32_hex>
+```
+
+The URI prefix makes shares identifiable by any QR reader, and the CRC-32 catches scan corruption (the Ed25519 signature also provides integrity, but the CRC gives an immediate error before attempting parse). Legacy raw-binary QR codes are accepted for backwards compatibility.
 
 Shares can be recovered by scanning the QR code with a camera or by typing the mnemonic words into the interactive collector.
 
@@ -376,9 +394,43 @@ An attacker who can replace **all** shares in a `--shares-dir` folder can trick 
 
 **Mitigation**: For unanchored operations, pin the expected pubkey:
 - `--pin-pubkey <hex>` — full 64-character hex pubkey (printed during key creation)
+- `--pin-fpr <hex>` — pubkey fingerprint prefix (first 16 hex chars, colon-separated, from share card)
 - `--anchor-encrypted <file>` — extract expected pubkey from an existing encrypted file's header
 
-Write down the pubkey hex on paper during the initial ceremony and verify it during subsequent operations.
+The key fingerprint (BLAKE3 of the pubkey, truncated to 8 bytes) is printed prominently during key creation. Write it down on paper and verify it during subsequent operations.
+
+### AEAD vs Ed25519 signature
+
+The encrypted file uses **two layers of authentication**:
+
+1. **XChaCha20-Poly1305 AEAD tag** authenticates the ciphertext. Detects any tampering with the encrypted payload.
+2. **Ed25519 signature** authenticates `header ‖ ciphertext ‖ tag`. Provides:
+   - Header integrity (version, threshold, nonce, pubkey, group cannot be modified)
+   - Full-file integrity (any bit flip anywhere is detected)
+   - Stable key identity (the pubkey in the header links to the signing key derived from the master key)
+
+The Ed25519 signature is essential because the AEAD tag alone doesn't cover the header fields.
+
+## Cryptographic internals
+
+### Shamir Secret Sharing — GF(2^32)
+
+Shares are computed over the Galois field GF(2^32) using the primitive polynomial:
+
+```
+p(x) = x³² + x²² + x² + x + 1   (0x1_0040_0007)
+```
+
+This polynomial is irreducible and primitive over GF(2), meaning every non-zero element of the field has a unique multiplicative inverse and can be expressed as a power of the generator. The reduction constant `0x0040_0007` is the low 32 bits (the x^32 term is implicit in the Russian-peasant multiplication).
+
+Arithmetic operations:
+- **Addition/subtraction**: XOR (identical in characteristic-2 fields)
+- **Multiplication**: Russian-peasant algorithm with modular reduction
+- **Inverse**: Fermat's little theorem — a⁻¹ = a^(2³²−2)
+
+The 32-byte secret is treated as 8 independent GF(2^32) elements. Each element gets its own random polynomial of degree k−1, and shares are evaluations of these polynomials at the share's x value. Lagrange interpolation at x=0 recovers each element.
+
+Reference: first entry for degree 32 in [Partow's primitive polynomial table](https://www.partow.net/programming/polynomials/index.html).
 
 ### Recommended environment
 

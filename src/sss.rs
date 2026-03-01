@@ -1,8 +1,36 @@
 //! Shamir Secret Sharing over GF(2^32).
 //!
-//! - Polynomial basis with irreducible polynomial x^32 + x^7 + x^3 + x^2 + 1.
+//! ## Finite field
+//!
+//! Arithmetic is in GF(2^32) with the primitive polynomial:
+//!
+//! ```text
+//! p(x) = x^32 + x^22 + x^2 + x + 1   (0x1_0040_0007)
+//! ```
+//!
+//! This is a **primitive** polynomial of degree 32 over GF(2), meaning every
+//! non-zero field element can be expressed as a power of the generator α (a
+//! root of p).  Primitivity implies irreducibility, which is the core
+//! requirement for a valid field — every non-zero element has a unique
+//! multiplicative inverse.
+//!
+//! Reference: first entry for degree 32 in Arash Partow's table of
+//! primitive polynomials over GF(2).
+//! See: <https://www.partow.net/programming/polynomials/index.html>
+//!
+//! ## Share format
+//!
 //! - Secret is 32 bytes (8 × u32 elements); each share is (x: u32, y: [u8; 32]).
 //! - Threshold K ∈ [2, 255], total shares N ∈ [K, 255].
+//! - x = 0 is reserved (the secret is the polynomial evaluated at x = 0).
+//!
+//! ## Security note
+//!
+//! Shares are **information-theoretically secure**: fewer than K shares reveal
+//! zero information about the secret.  However, the share *set* is not
+//! authenticated by Shamir alone — an attacker who controls a share directory
+//! could substitute a consistent set from a different key.  Always anchor
+//! operations to a known pubkey or encrypted-file header when possible.
 
 use anyhow::{bail, Result};
 use rand_core::{CryptoRng, RngCore};
@@ -179,11 +207,23 @@ pub fn combine(shares: &[RawShare], k: u8) -> Result<[u8; SECRET_LEN]> {
 }
 
 // ---------------------------------------------------------------------------
-// GF(2^32) arithmetic — irreducible polynomial x^32 + x^7 + x^3 + x^2 + 1
+// GF(2^32) arithmetic — primitive polynomial x^32 + x^22 + x^2 + x + 1
 // ---------------------------------------------------------------------------
 
-/// Reduction constant: low bits of x^32 + x^7 + x^3 + x^2 + 1 (sans x^32).
-const POLY: u32 = 0x8D;
+/// Reduction polynomial for GF(2^32): the low 32 bits of
+/// p(x) = x^32 + x^22 + x^2 + x + 1.
+///
+/// ```text
+/// x^22 + x^2 + x^1 + x^0 = 0x0040_0007
+/// ```
+///
+/// When a multiplication shifts a 1 into bit 32 (the x^32 term), we XOR
+/// the result with POLY to reduce back into 32 bits.  This is the standard
+/// Barrett / Russian-peasant reduction for binary extension fields.
+///
+/// Source: first entry for degree 32 in Partow's primitive-polynomial
+/// table — <https://www.partow.net/programming/polynomials/index.html>
+const POLY: u32 = 0x0040_0007;
 
 /// Evaluate polynomial at point x using Horner's method.
 fn eval_poly(coeffs: &[u32], x: u32) -> u32 {
@@ -243,10 +283,15 @@ fn gf_mul(mut a: u32, mut b: u32) -> u32 {
 }
 
 /// Multiplicative inverse via Fermat's little theorem: a^(2^32 − 2) in GF(2^32).
+///
+/// # Panics
+///
+/// Panics if `a == 0` — zero has no multiplicative inverse in any field.
+/// This indicates a logic error in the caller (e.g., duplicate x values
+/// in Lagrange interpolation causing a zero denominator).
 fn gf_inv(a: u32) -> u32 {
-    if a == 0 {
-        return 0;
-    }
+    assert!(a != 0, "gf_inv(0): zero has no multiplicative inverse — \
+                     this is a bug (duplicate x values or x=0 in shares?)");
     gf_pow(a, 0xFFFF_FFFE)
 }
 
@@ -394,6 +439,47 @@ mod tests {
             vec![1, 2, 3, 4, 5],
             "random u32 x values should not be sequential"
         );
+    }
+
+    /// Verify the reduction polynomial is irreducible (every non-zero
+    /// element has a multiplicative inverse) and primitive (the generator
+    /// α has maximal order 2^32 − 1).
+    #[test]
+    fn polynomial_is_primitive() {
+        // Irreducibility: a * a^(-1) = 1 for a broad sample.
+        for a in 1u32..=5000 {
+            let inv = gf_inv(a);
+            assert_eq!(
+                gf_mul(a, inv),
+                1,
+                "gf_inv failed for {a} — polynomial may not be irreducible"
+            );
+        }
+        // Fermat's little theorem: a^(2^32 − 1) = 1.
+        for a in [1u32, 2, 0x0040_0007, 0xDEAD_BEEF, 0xFFFF_FFFF] {
+            assert_eq!(
+                gf_pow(a, 0xFFFF_FFFF),
+                1,
+                "Fermat's little theorem failed for {a:#x}"
+            );
+        }
+        // Primitivity: α^((2^32−1)/q) ≠ 1 for each prime factor q of
+        // 2^32−1 = 3 × 5 × 17 × 257 × 65537.
+        // Use α = 2 (the element x, i.e. the polynomial generator).
+        let order: u64 = 0xFFFF_FFFF;
+        for q in [3u64, 5, 17, 257, 65537] {
+            assert_ne!(
+                gf_pow(2, order / q),
+                1,
+                "generator has sub-order (2^32-1)/{q} — polynomial is not primitive"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "gf_inv(0)")]
+    fn gf_inv_zero_panics() {
+        gf_inv(0);
     }
 
     #[test]
