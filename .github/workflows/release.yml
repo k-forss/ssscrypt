@@ -53,10 +53,25 @@ jobs:
           vt_api_key: ${{ secrets.VT_API_KEY }}
           files: ssscrypt-${{ github.ref_name }}-x86_64-linux.tar.gz
 
+      - name: Extract changelog
+        id: changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Extract the section between ## [VERSION] and the next ## [ heading
+          # (or EOF if this is the last entry)
+          awk -v ver="$VERSION" '
+            /^## \[/ { if (found) exit; if (index($0, "[" ver "]")) { found=1; next } }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' -e :a -e '/^\s*$/{ $d; N; ba; }' \
+            > /tmp/release-body.md
+          if [ ! -s /tmp/release-body.md ]; then
+            echo "⚠ No changelog entry found for ${VERSION}" > /tmp/release-body.md
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body_path: /tmp/release-body.md
           files: |
             ssscrypt-*.tar.gz
             ssscrypt-*-SHA256SUMS.txt
