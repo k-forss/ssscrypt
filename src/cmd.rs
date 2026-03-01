@@ -847,23 +847,31 @@ fn resolve_anchor(pin: &PinArgs) -> Result<Option<ResolvedAnchor>> {
             bail!("--pin-fpr must be a non-empty hex string");
         }
         if hex.len() % 2 != 0 {
-            bail!("--pin-fpr hex must have an even number of characters (got {})", hex.len());
+            bail!(
+                "--pin-fpr hex must have an even number of characters (got {})",
+                hex.len()
+            );
         }
         if hex.len() > 16 {
-            bail!("--pin-fpr prefix is at most 8 bytes (16 hex chars), got {} chars", hex.len());
+            bail!(
+                "--pin-fpr prefix is at most 8 bytes (16 hex chars), got {} chars",
+                hex.len()
+            );
         }
         let mut bytes = Vec::with_capacity(hex.len() / 2);
         for i in (0..hex.len()).step_by(2) {
-            bytes.push(u8::from_str_radix(&hex[i..i + 2], 16)
-                .with_context(|| format!("invalid hex in --pin-fpr at position {i}"))?);
+            bytes.push(
+                u8::from_str_radix(&hex[i..i + 2], 16)
+                    .with_context(|| format!("invalid hex in --pin-fpr at position {i}"))?,
+            );
         }
         return Ok(Some(ResolvedAnchor::FingerprintPrefix(bytes)));
     }
 
     if let Some(path) = &pin.anchor_encrypted {
         let data = std::fs::read(path).with_context(|| format!("read anchor file {:?}", path))?;
-        let encrypted = EncryptedFile::parse(&data)
-            .with_context(|| format!("parse anchor file {:?}", path))?;
+        let encrypted =
+            EncryptedFile::parse(&data).with_context(|| format!("parse anchor file {:?}", path))?;
         eprintln!("  anchor pubkey from {:?}", path);
         return Ok(Some(ResolvedAnchor::Pubkey(encrypted.header.pubkey)));
     }

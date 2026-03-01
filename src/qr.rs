@@ -198,14 +198,16 @@ pub fn parse_qr_payload(data: &[u8]) -> Result<Share> {
     if let Ok(text) = std::str::from_utf8(data) {
         if let Some(rest) = text.strip_prefix(QR_URI_PREFIX) {
             // Split off CRC suffix.
-            let (b64_part, crc_hex) = rest.rsplit_once(':')
+            let (b64_part, crc_hex) = rest
+                .rsplit_once(':')
                 .context("QR URI missing CRC32 suffix")?;
-            let binary = B64URL.decode(b64_part)
+            let binary = B64URL
+                .decode(b64_part)
                 .context("QR URI: invalid base64url")?;
 
             // Verify CRC.
-            let expected_crc = u32::from_str_radix(crc_hex, 16)
-                .context("QR URI: invalid CRC32 hex")?;
+            let expected_crc =
+                u32::from_str_radix(crc_hex, 16).context("QR URI: invalid CRC32 hex")?;
             let actual_crc = crc32(&binary);
             if expected_crc != actual_crc {
                 bail!(
@@ -215,8 +217,7 @@ pub fn parse_qr_payload(data: &[u8]) -> Result<Share> {
                 );
             }
 
-            return Share::from_bytes(&binary)
-                .context("failed to parse share from QR URI payload");
+            return Share::from_bytes(&binary).context("failed to parse share from QR URI payload");
         }
     }
 

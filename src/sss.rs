@@ -290,8 +290,11 @@ fn gf_mul(mut a: u32, mut b: u32) -> u32 {
 /// This indicates a logic error in the caller (e.g., duplicate x values
 /// in Lagrange interpolation causing a zero denominator).
 fn gf_inv(a: u32) -> u32 {
-    assert!(a != 0, "gf_inv(0): zero has no multiplicative inverse — \
-                     this is a bug (duplicate x values or x=0 in shares?)");
+    assert!(
+        a != 0,
+        "gf_inv(0): zero has no multiplicative inverse — \
+                     this is a bug (duplicate x values or x=0 in shares?)"
+    );
     gf_pow(a, 0xFFFF_FFFE)
 }
 
